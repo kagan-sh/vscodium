@@ -457,7 +457,11 @@ async function listWorktrees(folder) {
  * @returns {string}
  */
 function sentence(error) {
-  return error instanceof Error ? error.message : String(error);
+  const message = error instanceof Error ? error.message : String(error);
+  if (/not granted/i.test(message)) {
+    return 'VSCodium did not start. Checking the local page is not allowed yet.';
+  }
+  return message;
 }
 
 /** @param {string} text */
