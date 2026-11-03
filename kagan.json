@@ -1,0 +1,31 @@
+{
+  "id": "dev.kagan.vscodium",
+  "name": "VSCodium",
+  "version": "0.1.0",
+  "kagan": ">=0.1.0",
+  "entry": "main.js",
+  "instructions": "The VSCodium panel sits on the right. It shows one local page when that page is already running on this Mac. This host cannot download or start that server, so the panel opens the thread workspace in the desktop app instead. editor_open takes a path relative to that workspace, or an absolute path inside the workspace, the thread environment, or a sibling git worktree of that repo. Pass line to jump to that line. If the thread is off screen, the file opens the next time this panel is shown. Only the latest request is kept, for 10 minutes.",
+  "powers": {
+    "run": [{ "program": "codium" }, { "program": "git" }],
+    "areas": ["process", "threads"]
+  },
+  "ui": {
+    "panels": [
+      {
+        "id": "open",
+        "title": "VSCodium",
+        "view": "OpenPanel",
+        "placement": "right",
+        "follows": "thread"
+      }
+    ]
+  },
+  "tools": [
+    {
+      "name": "editor_open",
+      "description": "Open a file in VSCodium on this Mac. The path is relative to the thread workspace, or absolute inside that workspace, the thread environment, or a sibling git worktree of that repo. Pass line to jump to that line. If the thread is off screen, the open waits until the VSCodium panel is shown. Replies with whether it opened.",
+      "input": "schemas/editor_open.json",
+      "scope": "all"
+    }
+  ]
+}

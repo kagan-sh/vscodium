@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "properties": {
+    "path": {
+      "type": "string",
+      "description": "Path relative to the thread workspace, or an absolute path inside that workspace, the thread environment, or a sibling git worktree of that repo."
+    },
+    "line": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Optional line number to jump to."
+    }
+  },
+  "required": ["path"],
+  "additionalProperties": false
+}
