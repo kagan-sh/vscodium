@@ -4,7 +4,6 @@ import { View, div } from 'gpui-kit';
 import { KgButton, WebView } from 'gpui-component';
 import { randomBytes } from 'crypto';
 import { mkdir } from 'fs/promises';
-import os from 'os';
 import proc from 'process';
 import { context, log, onContextChanged, openPanel, threadOnScreen } from 'kagan/host';
 import { run } from 'kagan/process';
@@ -109,6 +108,7 @@ export class OpenPanel extends View {
 
   /** @param {string} text */
   showFailure(text) {
+    log('error', text);
     this.page = '';
     this.shown = null;
     this.failed = true;
@@ -342,6 +342,7 @@ async function answering(port) {
     return versionReady(response.status);
   } catch (error) {
     const message = sentence(error);
+    // A fetch grant is HTTPS on port 443. This check is plain HTTP on a free port, so the host refuses it.
     if (/not granted/i.test(message)) throw error;
     return false;
   }
@@ -361,13 +362,12 @@ function sleep(cx, ms) {
  * @returns {Promise<{ dataDir: string, cliDir: string } | null>}
  */
 async function serverDirs() {
-  const folders = serverFolders(proc.dataDir, os.tmpdir());
-  try {
-    await mkdir(folders.dataDir, { recursive: true });
-    await mkdir(folders.cliDir, { recursive: true });
-  } catch (error) {
-    log('warn', `VSCodium will create its server folders itself. ${sentence(error)}`);
-  }
+  const folders = serverFolders(proc.dataDir);
+  // The host names no data directory today, and a path outside the grant cannot be created here.
+  // The editor process creates the temporary folders itself.
+  if (typeof proc.dataDir !== 'string' || !proc.dataDir.startsWith('/')) return folders;
+  await mkdir(folders.dataDir, { recursive: true });
+  await mkdir(folders.cliDir, { recursive: true });
   return folders;
 }
 

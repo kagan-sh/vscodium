@@ -1,5 +1,4 @@
 // Pure helpers with no kagan imports, so `node --test` can run them.
-import path from 'node:path';
 
 /** How long an off-screen editor_open is kept. */
 export const PENDING_MS = 10 * 60 * 1000;
@@ -26,7 +25,8 @@ const STARTING = 'Starting VSCodium. The first start can take a few minutes.';
  * @returns {boolean}
  */
 export function pageOnThisSystem(platform) {
-  return platform === 'darwin';
+  // Node says darwin. This runtime says macos.
+  return platform === 'darwin' || platform === 'macos';
 }
 
 /**
@@ -99,17 +99,17 @@ export function portOrder(saved) {
 /**
  * Server files stay in the plugin data folder when the host names one.
  * Otherwise they stay under the temporary folder, away from the editor's own profile.
+ * The runtime has no temporary-directory call, and this page only starts on macOS, where `/tmp` exists.
  * @param {string | null | undefined} dataDir
- * @param {string} fallbackDir
  * @returns {{ dataDir: string, cliDir: string }}
  */
-export function serverFolders(dataDir, fallbackDir) {
+export function serverFolders(dataDir) {
   const base = typeof dataDir === 'string' && dataDir.startsWith('/')
-    ? dataDir
-    : path.join(fallbackDir, 'kagan-vscodium');
+    ? dataDir.replace(/\/+$/, '')
+    : '/tmp/kagan-vscodium';
   return {
-    dataDir: path.join(base, 'server'),
-    cliDir: path.join(base, 'cli'),
+    dataDir: `${base}/server`,
+    cliDir: `${base}/cli`,
   };
 }
 

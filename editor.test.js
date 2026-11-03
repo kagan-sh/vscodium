@@ -61,13 +61,14 @@ test('the connection token is hex from the random bytes', () => {
 });
 
 test('server files stay in the plugin data folder, or under a temporary folder', () => {
-  assert.deepEqual(serverFolders('/data/plugins/vscodium/data', '/tmp'), {
+  assert.deepEqual(serverFolders('/data/plugins/vscodium/data'), {
     dataDir: '/data/plugins/vscodium/data/server',
     cliDir: '/data/plugins/vscodium/data/cli',
   });
-  const fallback = serverFolders(undefined, '/tmp');
-  assert.equal(fallback.dataDir, path.join('/tmp', 'kagan-vscodium', 'server'));
-  assert.equal(fallback.cliDir, path.join('/tmp', 'kagan-vscodium', 'cli'));
+  assert.deepEqual(serverFolders(undefined), {
+    dataDir: '/tmp/kagan-vscodium/server',
+    cliDir: '/tmp/kagan-vscodium/cli',
+  });
 });
 
 test('the saved port is tried first, then a fixed range, once each', () => {
@@ -130,6 +131,7 @@ test('a failure hides the connection token', () => {
 
 test('the page is drawn on macOS only', () => {
   assert.equal(pageOnThisSystem('darwin'), true);
+  assert.equal(pageOnThisSystem('macos'), true);
   assert.equal(pageOnThisSystem('linux'), false);
   assert.equal(pageOnThisSystem('win32'), false);
 });
