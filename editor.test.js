@@ -2,57 +2,136 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import {
-  FILE_FIELD_LABEL,
+  FIRST_PORT,
   PENDING_MS,
-  codiumArgs,
-  codiumWorkspaceArgs,
+  PORT_SPAN,
   beginToolLaunch,
+  connectionToken,
   createPending,
+  editorPageUrl,
   endToolLaunch,
-  fileFieldPath,
-  movePanel,
+  failureText,
   insideFolder,
   laterText,
+  movePanel,
   notFoundText,
+  openPosition,
+  openedWhere,
+  openingText,
+  pageOnThisSystem,
+  portBusy,
+  portOrder,
   resolveOpenPath,
+  serverFolders,
+  scrub,
+  serveWebArgs,
+  versionReady,
+  versionUrl,
   worktreePaths,
 } from './editor.js';
 
-test('path only opens the file in the last window', () => {
-  assert.deepEqual(codiumArgs({ path: '/Users/me/app.js' }), [
-    '--reuse-window',
-    '--goto',
-    '/Users/me/app.js',
+const token = 'ab'.repeat(16);
+
+test('serve-web listens on this machine with a connection token', () => {
+  assert.deepEqual(serveWebArgs({ port: 47321, token, dataDir: '/tmp/editor-data', cliDir: '/tmp/editor-cli' }), [
+    'serve-web',
+    '--host', '127.0.0.1',
+    '--port', '47321',
+    '--connection-token', token,
+    '--accept-server-license-terms',
+    '--disable-telemetry',
+    '--log', 'off',
+    '--server-data-dir', '/tmp/editor-data',
+    '--cli-data-dir', '/tmp/editor-cli',
   ]);
 });
 
-test('a line number is added after the path', () => {
-  assert.deepEqual(codiumArgs({ path: '/Users/me/app.js', line: 42 }), [
-    '--reuse-window',
-    '--goto',
-    '/Users/me/app.js:42',
+test('a bad port or token is refused', () => {
+  assert.throws(() => serveWebArgs({ port: 0, token }), /port/);
+  assert.throws(() => serveWebArgs({ port: 47321, token: 'short' }), /token/);
+  assert.throws(() => serveWebArgs({ port: 47321, token, dataDir: 'relative' }), /absolute path/);
+});
+
+test('the connection token is hex from the random bytes', () => {
+  const bytes = new Uint8Array(16);
+  bytes[0] = 0x0a;
+  bytes[15] = 0xff;
+  assert.equal(connectionToken(bytes), '0a0000000000000000000000000000ff');
+  assert.throws(() => connectionToken(new Uint8Array(8)), /16 random bytes/);
+});
+
+test('server files stay in the plugin data folder, or under a temporary folder', () => {
+  assert.deepEqual(serverFolders('/data/plugins/vscodium/data', '/tmp'), {
+    dataDir: '/data/plugins/vscodium/data/server',
+    cliDir: '/data/plugins/vscodium/data/cli',
+  });
+  const fallback = serverFolders(undefined, '/tmp');
+  assert.equal(fallback.dataDir, path.join('/tmp', 'kagan-vscodium', 'server'));
+  assert.equal(fallback.cliDir, path.join('/tmp', 'kagan-vscodium', 'cli'));
+});
+
+test('the saved port is tried first, then a fixed range, once each', () => {
+  const ports = portOrder(FIRST_PORT + 3);
+  assert.equal(ports[0], FIRST_PORT + 3);
+  assert.equal(ports.length, PORT_SPAN);
+  assert.deepEqual(portOrder('nope').slice(0, 2), [FIRST_PORT, FIRST_PORT + 1]);
+});
+
+test('the page address stays on this machine and names the folder', () => {
+  const url = new URL(editorPageUrl({ port: 47321, token, folder: '/work/app' }));
+  assert.equal(url.hostname, '127.0.0.1');
+  assert.equal(url.port, '47321');
+  assert.equal(url.searchParams.get('tkn'), token);
+  assert.equal(url.searchParams.get('folder'), '/work/app');
+  assert.equal(url.searchParams.get('payload'), null);
+  assert.equal(versionUrl(47321), 'http://127.0.0.1:47321/version');
+  assert.equal(versionReady(200), true);
+  assert.equal(versionReady(403), false);
+});
+
+test('a file open asks the page to jump to the line and column', () => {
+  const url = new URL(editorPageUrl({
+    port: 47321,
+    token,
+    folder: '/work/app',
+    file: '/work/app/src/a.js',
+    line: 42,
+    column: 7,
+  }));
+  const payload = JSON.parse(url.searchParams.get('payload') ?? '');
+  assert.deepEqual(payload, [
+    ['openFile', 'vscode-remote://127.0.0.1:47321/work/app/src/a.js:42:7'],
+    ['gotoLineMode', 'true'],
   ]);
 });
 
-test('a null line is the same as no line', () => {
-  assert.deepEqual(codiumArgs({ path: '/a.js', line: null }), ['--reuse-window', '--goto', '/a.js']);
+test('a line and a column have to be whole numbers, and a column needs a line', () => {
+  assert.deepEqual(openPosition(null, null), {});
+  assert.deepEqual(openPosition(4, undefined), { line: 4 });
+  assert.throws(() => openPosition(0, undefined), /line/);
+  assert.throws(() => openPosition(undefined, 2), /column needs a line/);
+  assert.equal(openedWhere('/a.js', 4, 2), '/a.js:4:2');
+  assert.equal(openingText('/a.js:4', true), 'Opened /a.js:4.');
+  assert.match(openingText('/a.js:4', false), /first start/);
 });
 
-test('relative and missing paths are refused', () => {
-  assert.throws(() => codiumArgs({ path: 'src/app.js' }), /absolute path/);
-  assert.throws(() => codiumArgs({}), /absolute path/);
-  assert.throws(() => codiumArgs({ path: 42 }), /absolute path/);
+test('a busy port is not a missing editor', () => {
+  assert.equal(portBusy('could not start server on the given host/port: Address already in use (os error 48)'), true);
+  assert.equal(portBusy('Error: listen EADDRINUSE: address already in use 127.0.0.1:47321'), true);
+  assert.equal(portBusy('Web UI available at http://127.0.0.1:47321'), false);
 });
 
-test('a path with a line break or NUL is refused', () => {
-  assert.throws(() => codiumArgs({ path: '/a\nb.js' }), /line break/);
-  assert.throws(() => codiumArgs({ path: '/a\0b.js' }), /line break/);
+test('a failure hides the connection token', () => {
+  const text = failureText(`refused token ${token}`, 1, token);
+  assert.match(text, /did not start/);
+  assert.equal(text.includes(token), false);
+  assert.equal(scrub(`see ${token}`, token).includes(token), false);
 });
 
-test('a bad line number is refused', () => {
-  for (const line of [0, -3, 1.5, '3', NaN]) {
-    assert.throws(() => codiumArgs({ path: '/a.js', line }), /whole number/, `line ${String(line)}`);
-  }
+test('the page is drawn on macOS only', () => {
+  assert.equal(pageOnThisSystem('darwin'), true);
+  assert.equal(pageOnThisSystem('linux'), false);
+  assert.equal(pageOnThisSystem('win32'), false);
 });
 
 test('a missing codium command says how to install it', () => {
@@ -65,12 +144,8 @@ const workspace = '/bb/worktrees/thr_a/frontend';
 const environment = '/bb/worktrees/thr_a/frontend';
 const sibling = '/bb/worktrees/thr_a/frontend-257';
 
-test('a workspace open reuses the window on that folder', () => {
-  assert.deepEqual(codiumWorkspaceArgs(workspace), ['--reuse-window', workspace]);
-});
-
-test('a missing workspace is refused', () => {
-  assert.throws(() => codiumWorkspaceArgs(''), /no workspace folder/);
+test('a page with no workspace is refused', () => {
+  assert.throws(() => editorPageUrl({ port: 47321, token, folder: '' }), /no workspace folder/);
 });
 
 test('insideFolder matches Node for ordinary paths', () => {
@@ -141,14 +216,9 @@ test('when git cannot list worktrees, the refusal says so', () => {
   );
 });
 
-test('an empty path is refused and is not the file-field label', () => {
+test('an empty path is refused', () => {
   assert.throws(() => resolveOpenPath(workspace, environment, [], ''), /The path is empty/);
   assert.throws(() => resolveOpenPath(workspace, environment, [], '   '), /The path is empty/);
-  assert.deepEqual(fileFieldPath(''), { empty: true });
-  assert.deepEqual(fileFieldPath('   '), { empty: true });
-  assert.deepEqual(fileFieldPath(FILE_FIELD_LABEL), { empty: true });
-  assert.deepEqual(fileFieldPath(`${workspace}/a.js:42`), { empty: false, path: `${workspace}/a.js`, line: 42 });
-  assert.deepEqual(fileFieldPath(`${workspace}/a.js:42:7`), { empty: false, path: `${workspace}/a.js`, line: 42 });
 });
 
 test('git worktree porcelain lists every worktree folder', () => {

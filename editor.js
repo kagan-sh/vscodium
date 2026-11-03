@@ -1,44 +1,255 @@
 // Pure helpers with no kagan imports, so `node --test` can run them.
+import path from 'node:path';
 
 /** How long an off-screen editor_open is kept. */
 export const PENDING_MS = 10 * 60 * 1000;
 
-export const FILE_FIELD_LABEL = 'File on this Mac';
+/** How long `codium serve-web` is kept. Unload kills it sooner. */
+export const HOLD_MS = 365 * 24 * 60 * 60 * 1000;
+
+/** Pause between checks that the page is answering. */
+export const POLL_MS = 300;
+
+/** First port to try. The last one that worked is tried before this. */
+export const FIRST_PORT = 47321;
+
+/** How many ports to try after the saved one. */
+export const PORT_SPAN = 32;
+
+/** The host shows this when the page cannot be drawn. */
+export const ONLY_MACOS = 'This page works on macOS only for now.';
+
+const STARTING = 'Starting VSCodium. The first start can take a few minutes.';
 
 /**
- * Turns a request into the arguments for `codium`.
- * The path is passed as one argument, never through a shell.
- * @param {{ path?: unknown, line?: unknown }} request
+ * @param {string} platform
+ * @returns {boolean}
+ */
+export function pageOnThisSystem(platform) {
+  return platform === 'darwin';
+}
+
+/**
+ * @param {Uint8Array} bytes
+ * @returns {string}
+ */
+export function connectionToken(bytes) {
+  if (!(bytes instanceof Uint8Array) || bytes.length < 16) {
+    throw new Error('The connection token needs at least 16 random bytes.');
+  }
+  let token = '';
+  for (const byte of bytes) token += byte.toString(16).padStart(2, '0');
+  return token;
+}
+
+/**
+ * Arguments for one long-lived `codium serve-web`. The folder is in the page address, not here.
+ * @param {{ port: number, token: string, dataDir?: string | null, cliDir?: string | null }} options
  * @returns {string[]}
  */
-export function codiumArgs(request) {
-  const { path, line } = request;
-  if (typeof path !== 'string' || !path.startsWith('/')) {
-    throw new Error('Give an absolute path that starts with "/".');
+export function serveWebArgs(options) {
+  const { port, token, dataDir, cliDir } = options;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('The port must be a whole number from 1 to 65535.');
   }
-  if (/[\0\r\n]/.test(path)) {
-    throw new Error('The path has a line break or a NUL character.');
+  if (typeof token !== 'string' || !/^[0-9a-f]{32,}$/.test(token)) {
+    throw new Error('The connection token is missing.');
   }
-  let target = path;
+  const args = [
+    'serve-web',
+    '--host', '127.0.0.1',
+    '--port', String(port),
+    '--connection-token', token,
+    '--accept-server-license-terms',
+    '--disable-telemetry',
+    '--log', 'off',
+  ];
+  if (dataDir !== undefined && dataDir !== null && dataDir !== '') {
+    if (typeof dataDir !== 'string' || !dataDir.startsWith('/')) {
+      throw new Error('The server data folder must be an absolute path.');
+    }
+    args.push('--server-data-dir', dataDir);
+  }
+  if (cliDir !== undefined && cliDir !== null && cliDir !== '') {
+    if (typeof cliDir !== 'string' || !cliDir.startsWith('/')) {
+      throw new Error('The server data folder must be an absolute path.');
+    }
+    args.push('--cli-data-dir', cliDir);
+  }
+  return args;
+}
+
+/**
+ * Saved port first, then a fixed range, with no duplicates.
+ * @param {unknown} saved
+ * @returns {number[]}
+ */
+export function portOrder(saved) {
+  /** @type {number[]} */
+  const ports = [];
+  const push = (/** @type {unknown} */ port) => {
+    if (!Number.isInteger(port) || /** @type {number} */ (port) < 1 || /** @type {number} */ (port) > 65535) return;
+    if (!ports.includes(/** @type {number} */ (port))) ports.push(/** @type {number} */ (port));
+  };
+  push(saved);
+  for (let offset = 0; offset < PORT_SPAN; offset += 1) push(FIRST_PORT + offset);
+  return ports;
+}
+
+/**
+ * Server files stay in the plugin data folder when the host names one.
+ * Otherwise they stay under the temporary folder, away from the editor's own profile.
+ * @param {string | null | undefined} dataDir
+ * @param {string} fallbackDir
+ * @returns {{ dataDir: string, cliDir: string }}
+ */
+export function serverFolders(dataDir, fallbackDir) {
+  const base = typeof dataDir === 'string' && dataDir.startsWith('/')
+    ? dataDir
+    : path.join(fallbackDir, 'kagan-vscodium');
+  return {
+    dataDir: path.join(base, 'server'),
+    cliDir: path.join(base, 'cli'),
+  };
+}
+
+/**
+ * `/version` answers before the connection token is checked.
+ * @param {number} port
+ * @returns {string}
+ */
+export function versionUrl(port) {
+  return `http://127.0.0.1:${port}/version`;
+}
+
+/**
+ * A listener that is already up is not the one we are about to start.
+ * @param {number} status
+ * @returns {boolean}
+ */
+export function versionReady(status) {
+  return status === 200;
+}
+
+/**
+ * The editor reports a busy port on stdout and still exits 0.
+ * @param {string} output
+ * @returns {boolean}
+ */
+export function portBusy(output) {
+  return /eaddrinuse|address already in use|os error 48/i.test(output || '');
+}
+
+/**
+ * @param {string} text
+ * @param {string} token
+ * @returns {string}
+ */
+export function scrub(text, token) {
+  if (!token) return text;
+  return text.split(token).join('…');
+}
+
+/**
+ * @param {string} output
+ * @param {number | null | undefined} exitCode
+ * @param {string} token
+ * @returns {string}
+ */
+export function failureText(output, exitCode, token) {
+  const clean = scrub(output || '', token);
+  const detail = clean.split('\n').map((line) => line.trim()).find(Boolean) || `exit code ${exitCode ?? 'none'}`;
+  return `VSCodium did not start. ${detail}`;
+}
+
+/**
+ * @param {unknown} line
+ * @param {unknown} column
+ * @returns {{ line?: number, column?: number }}
+ */
+export function openPosition(line, column) {
+  /** @type {{ line?: number, column?: number }} */
+  const position = {};
   if (line !== undefined && line !== null) {
     if (!Number.isInteger(line) || /** @type {number} */ (line) < 1) {
       throw new Error('The line must be a whole number, 1 or more.');
     }
-    target = `${path}:${line}`;
+    position.line = /** @type {number} */ (line);
   }
-  return ['--reuse-window', '--goto', target];
+  if (column !== undefined && column !== null) {
+    if (!position.line) throw new Error('A column needs a line.');
+    if (!Number.isInteger(column) || /** @type {number} */ (column) < 1) {
+      throw new Error('The column must be a whole number, 1 or more.');
+    }
+    position.column = /** @type {number} */ (column);
+  }
+  return position;
 }
 
 /**
- * Opens a folder as the VSCodium workspace.
- * @param {string} folder
- * @returns {string[]}
+ * @param {string} path
+ * @param {number | undefined} line
+ * @param {number | undefined} column
+ * @returns {string}
  */
-export function codiumWorkspaceArgs(folder) {
+export function openedWhere(path, line, column) {
+  if (!line) return path;
+  if (!column) return `${path}:${line}`;
+  return `${path}:${line}:${column}`;
+}
+
+/**
+ * @param {string} where
+ * @param {boolean} ready
+ * @returns {string}
+ */
+export function openingText(where, ready) {
+  if (ready) return `Opened ${where}.`;
+  return `Opening ${where}. ${STARTING}`;
+}
+
+export { STARTING };
+
+/**
+ * The page reads `folder` and `payload` once, at startup.
+ * `gotoLineMode` makes it take `:line:column` off the file path.
+ * The file address uses the same host and port the page was served from.
+ * @param {{ port: number, token: string, folder: string, file?: string | null, line?: number, column?: number }} options
+ * @returns {string}
+ */
+export function editorPageUrl(options) {
+  const { port, token, folder, file, line, column } = options;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('The port must be a whole number from 1 to 65535.');
+  }
+  if (typeof token !== 'string' || token === '') throw new Error('The connection token is missing.');
   if (typeof folder !== 'string' || !folder.startsWith('/')) {
     throw new Error('This thread has no workspace folder yet.');
   }
-  return ['--reuse-window', folder];
+  const url = new URL(`http://127.0.0.1:${port}/`);
+  url.searchParams.set('tkn', token);
+  url.searchParams.set('folder', folder);
+  if (file !== undefined && file !== null && file !== '') {
+    if (typeof file !== 'string' || !file.startsWith('/')) {
+      throw new Error('Give an absolute path that starts with "/".');
+    }
+    let target = file;
+    if (line !== undefined) {
+      if (!Number.isInteger(line) || line < 1) throw new Error('The line must be a whole number, 1 or more.');
+      target += `:${line}`;
+      if (column !== undefined) {
+        if (!Number.isInteger(column) || column < 1) {
+          throw new Error('The column must be a whole number, 1 or more.');
+        }
+        target += `:${column}`;
+      }
+    }
+    /** @type {[string, string][]} */
+    const payload = [['openFile', `vscode-remote://127.0.0.1:${port}${encodeURI(target)}`]];
+    if (line !== undefined) payload.push(['gotoLineMode', 'true']);
+    url.searchParams.set('payload', JSON.stringify(payload));
+  }
+  return url.toString();
 }
 
 /**
@@ -49,23 +260,6 @@ export function codiumWorkspaceArgs(folder) {
 export function notFoundText(error) {
   const reason = error instanceof Error ? error.message : String(error);
   return `Could not start codium (${reason}). Install VSCodium, then in VSCodium run "Shell Command: Install 'codium' command in PATH".`;
-}
-
-/**
- * The file field. An empty box stays empty: the placeholder is not a path.
- * A trailing :line uses the line support in `codiumArgs`.
- * @param {unknown} raw
- * @returns {{ empty: true } | { empty: false, path: string, line?: number }}
- */
-export function fileFieldPath(raw) {
-  if (typeof raw !== 'string') return { empty: true };
-  const text = raw.trim();
-  if (text === '' || text === FILE_FIELD_LABEL) return { empty: true };
-  const withColumn = /^(.*):([1-9]\d*):([1-9]\d*)$/.exec(text);
-  if (withColumn && withColumn[1] !== '') return { empty: false, path: withColumn[1], line: Number(withColumn[2]) };
-  const match = /^(.*):([1-9]\d*)$/.exec(text);
-  if (!match || match[1] === '') return { empty: false, path: text };
-  return { empty: false, path: match[1], line: Number(match[2]) };
 }
 
 /**
