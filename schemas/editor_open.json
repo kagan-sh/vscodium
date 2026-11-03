@@ -9,6 +9,11 @@
       "type": "integer",
       "minimum": 1,
       "description": "Optional line number to jump to."
+    },
+    "column": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Optional column on that line. Requires line."
     }
   },
   "required": ["path"],

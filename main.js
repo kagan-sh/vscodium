@@ -1,44 +1,68 @@
 // @ts-check
 import { v_flex } from 'gpui-base';
 import { View, div } from 'gpui-kit';
-import * as gpuiComponent from 'gpui-component';
-import { Input, InputState, KgButton } from 'gpui-component';
-import { context, onContextChanged, threadOnScreen } from 'kagan/host';
+import { KgButton, WebView } from 'gpui-component';
+import { randomBytes } from 'crypto';
+import { mkdir } from 'fs/promises';
+import os from 'os';
+import proc from 'process';
+import { context, log, onContextChanged, openPanel, threadOnScreen } from 'kagan/host';
 import { run } from 'kagan/process';
 import { next, reply, fail } from 'kagan/jobs';
 import { environment, get, project } from 'kagan/threads';
 import {
-  FILE_FIELD_LABEL,
-  PENDING_MS,
-  beginToolLaunch,
-  codiumArgs,
-  codiumWorkspaceArgs,
-  createPending,
-  endToolLaunch,
-  fileFieldPath,
+  HOLD_MS,
+  ONLY_MACOS,
+  POLL_MS,
+  STARTING,
+  connectionToken,
+  editorPageUrl,
+  failureText,
   laterText,
   notFoundText,
+  openPosition,
+  openedWhere,
+  openingText,
+  pageOnThisSystem,
+  portBusy,
+  portOrder,
   resolveOpenPath,
+  scrub,
+  serverFolders,
+  serveWebArgs,
+  versionReady,
+  versionUrl,
   worktreePaths,
+  createPending,
+  PENDING_MS,
 } from './editor.js';
 
-const STARTING = 'Starting VSCodium on this Mac…';
-const PREPARING = 'Preparing VSCodium';
-const PAGE_MISSING =
-  'VSCodium\'s page is not running on this Mac. This panel can show a local page, and it cannot start that server.';
+const NO_THREAD = 'Open a thread first. There is no workspace to open.';
 
 /**
- * @typedef {{ args: string[], where: string }} Parked
+ * @typedef {{ path: string, line?: number, column?: number }} OpenSpec
+ * @typedef {{ port: number, token: string, promise: Promise<{ exitCode: number | null, stdout: string, stderr: string }> }} Server
  */
 
 /** @type {OpenPanel | null} */
 let panel = null;
 
-/** @type {{ put(threadId: string, value: Parked): void, take(threadId: string): Parked | null }} */
+/** @type {import('gpui-kit').AsyncContext | null} */
+let pluginCx = null;
+
+/** @type {Server | null} */
+let running = null;
+
+/** @type {Promise<Server> | null} */
+let starting = null;
+
+/** @type {{ put(threadId: string, value: OpenSpec): void, take(threadId: string): OpenSpec | null }} */
 const pending = createPending(PENDING_MS);
 
 export default class Plugin extends View {
+  /** @param {import('gpui-shell').Props | undefined} _props @param {import('gpui-kit').AsyncContext} cx */
   init(_props, cx) {
+    pluginCx = cx;
     cx.spawn(async () => {
       for (;;) {
         const job = await next();
@@ -52,118 +76,135 @@ export default class Plugin extends View {
 }
 
 export class OpenPanel extends View {
-  /** @param {import("gpui-shell").Props | undefined} _props @param {import("gpui-kit").AsyncContext} cx */
+  /** @param {import('gpui-shell').Props | undefined} _props @param {import('gpui-kit').AsyncContext} cx */
   init(_props, cx) {
     panel = this;
-    /** @type {import("gpui-kit").AsyncContext} */
+    /** @type {import('gpui-kit').AsyncContext} */
     this.cx = cx;
-    this.path = InputState.new(FILE_FIELD_LABEL, '');
-    this.path.on('submit', (_event, ctx) => this.openFile(ctx));
-    this.status = PREPARING;
+    this.status = STARTING;
     this.page = '';
-    this.pageMissing = false;
+    this.failed = false;
     this.busy = false;
-    this.hold = 0;
+    this.generation = 0;
+    /** @type {{ threadId: string, folder: string, url: string } | null} */
+    this.shown = null;
+    /** @type {{ threadId: string, spec: OpenSpec } | null} */
+    this.wanted = null;
     cx.spawn(async () => {
-      await this.consumePending();
-      this.settlePage();
+      await this.sync();
       for (;;) {
         await onContextChanged();
-        await this.consumePending();
-        this.settlePage();
+        await this.sync();
       }
     });
   }
 
-  settlePage() {
-    if (this.busy || this.page || (this.status && this.status !== PREPARING)) return;
-    this.pageMissing = true;
-    this.apply(PAGE_MISSING, false);
+  /** @param {OpenSpec} spec */
+  reveal(spec) {
+    const threadId = context().threadId;
+    if (!threadId) return;
+    this.wanted = { threadId, spec };
+    this.cx.spawn(() => this.sync());
   }
 
-  /** @param {import("gpui-kit").Context} _cx */
-  tryAgain(_cx) {
-    if (this.busy) return;
+  /** @param {string} text */
+  showFailure(text) {
     this.page = '';
-    this.pageMissing = false;
-    this.status = PREPARING;
-    this.settlePage();
-  }
-
-  /** @param {string} text @param {boolean} busy */
-  apply(text, busy) {
+    this.shown = null;
+    this.failed = true;
+    this.busy = false;
     this.status = text;
-    this.busy = busy;
     this.cx.notify();
   }
 
-  async consumePending() {
+  /** @param {import('gpui-kit').Context} cx */
+  tryAgain(cx) {
     if (this.busy) return;
-    const threadId = context().threadId;
-    if (!threadId) return;
-    const parked = pending.take(threadId);
-    if (!parked) return;
-    this.apply(STARTING, true);
-    const outcome = await launch(parked.args);
-    this.apply(outcome.text, false);
+    this.failed = false;
+    this.page = '';
+    this.shown = null;
+    this.status = STARTING;
+    cx.spawn(() => this.sync());
   }
 
-  /** @param {import("gpui-kit").Context} cx */
-  openWorkspace(cx) {
-    if (this.busy) return;
-    const threadId = context().threadId;
-    if (!threadId) {
-      this.apply('Open a thread first. There is no workspace to open.', false);
-      return;
-    }
-    this.hold += 1;
-    this.apply('Finding this thread\'s workspace.', true);
-    cx.spawn(async () => {
-      try {
-        const roots = await threadRoots(threadId);
-        this.apply(STARTING, true);
-        const outcome = await launch(codiumWorkspaceArgs(roots.workspace));
-        this.apply(outcome.text, false);
-      } catch (error) {
-        this.apply(sentence(error), false);
-      } finally {
-        this.hold -= 1;
-        await this.consumePending();
-      }
-    });
-  }
-
-  /** @param {import("gpui-kit").Context} cx */
-  openFile(cx) {
-    if (this.busy) return;
-    const field = fileFieldPath(this.path.value());
-    if (field.empty) {
-      this.apply('The file field is empty.', false);
+  async sync() {
+    const turn = ++this.generation;
+    const fresh = () => turn === this.generation;
+    if (!pageOnThisSystem(proc.platform)) {
+      this.page = '';
+      this.failed = false;
+      this.busy = false;
+      this.status = ONLY_MACOS;
+      this.cx.notify();
       return;
     }
     const threadId = context().threadId;
     if (!threadId) {
-      this.apply('Open a thread first. A file opens inside that thread\'s workspace.', false);
+      this.page = '';
+      this.failed = false;
+      this.busy = false;
+      this.status = NO_THREAD;
+      this.cx.notify();
       return;
     }
-    this.hold += 1;
-    this.apply('Finding this thread\'s workspace.', true);
-    cx.spawn(async () => {
-      try {
-        const outcome = await openFile(threadId, { path: field.path, line: field.line }, true);
-        this.apply(outcome.text, false);
-      } catch (error) {
-        this.apply(sentence(error), false);
-      } finally {
-        this.hold -= 1;
-        await this.consumePending();
+    this.failed = false;
+    if (!this.page) {
+      this.busy = true;
+      this.status = STARTING;
+      this.cx.notify();
+    }
+    let server;
+    try {
+      server = await ensureServer();
+    } catch (error) {
+      if (!fresh()) return;
+      this.showFailure(sentence(error));
+      return;
+    }
+    if (!fresh()) return;
+    const current = context().threadId;
+    if (!current) {
+      this.page = '';
+      this.busy = false;
+      this.status = NO_THREAD;
+      this.cx.notify();
+      return;
+    }
+    try {
+      const folder = (await workspaceOf(current)).workspace;
+      if (!fresh()) return;
+      const queued = pending.take(current);
+      let spec = queued;
+      if (this.wanted?.threadId === current) {
+        spec = this.wanted.spec;
+        this.wanted = null;
       }
-    });
+      const shown = this.shown;
+      const same = shown !== null && shown.threadId === current && shown.folder === folder && !spec;
+      const url = same
+        ? shown.url
+        : editorPageUrl({
+          port: server.port,
+          token: server.token,
+          folder,
+          file: spec?.path,
+          line: spec?.line,
+          column: spec?.column,
+        });
+      this.shown = { threadId: current, folder, url };
+      this.page = url;
+      this.failed = false;
+      this.busy = false;
+      this.status = '';
+      this.cx.notify();
+    } catch (error) {
+      if (!fresh()) return;
+      this.showFailure(sentence(error));
+    }
   }
 
   render() {
-    const page = this.page ? editorPage(this.page) : null;
-    if (page) return page;
+    if (this.page) return new WebView('editor').url(this.page);
     const column = v_flex()
       .id('vscodium-open')
       .size_full()
@@ -171,141 +212,206 @@ export class OpenPanel extends View {
       .justify_center()
       .p_4()
       .gap_3()
-      .child(div().w_full().text_center().child(this.status || PREPARING));
-    if (this.pageMissing) {
+      .child(div().id('vscodium-status').w_full().text_center().child(this.status || STARTING));
+    if (this.failed) {
       column.child(
         new KgButton('try-again')
           .label('Try again')
+          .primary()
           .disabled(this.busy)
           .on_click((_event, cx) => this.tryAgain(cx)),
       );
     }
-    return column
-      .child(
-        new KgButton('open-workspace')
-          .label('Open workspace in VSCodium')
-          .primary()
-          .disabled(this.busy)
-          .on_click((_event, cx) => this.openWorkspace(cx)),
-      )
-      .child(FILE_FIELD_LABEL)
-      .child('Put :42 on the end of the path to open at that line.')
-      .child(div().w_full().child(new Input(this.path).aria_label(FILE_FIELD_LABEL)))
-      .child(
-        new KgButton('open-file')
-          .label('Open this file')
-          .disabled(this.busy)
-          .on_click((_event, cx) => this.openFile(cx)),
-      );
+    return column;
   }
 }
 
-// The running app may not export WebView yet. A static import would fail the whole panel.
-/**
- * @param {string} url
- * @returns {import("gpui-kit").Element | null}
- */
-function editorPage(url) {
-  const host = /** @type {Record<string, { new (id: string): { url(url: string): import("gpui-kit").Element } } | undefined>} */ (
-    /** @type {unknown} */ (gpuiComponent)
+class PortInUse extends Error {
+  constructor() {
+    super('That port is already in use.');
+    this.name = 'PortInUse';
+  }
+}
+
+function ensureServer() {
+  if (running) return Promise.resolve(running);
+  if (starting) return starting;
+  const cx = pluginCx;
+  if (!cx) return Promise.reject(new Error('VSCodium is not ready yet.'));
+  starting = boot(cx).then(
+    (server) => {
+      running = server;
+      starting = null;
+      return server;
+    },
+    (error) => {
+      starting = null;
+      throw error;
+    },
   );
-  const WebView = host.WebView;
-  if (!WebView) return null;
-  return new WebView('editor').url(url);
+  return starting;
 }
 
 /**
- * @param {string} threadId
- * @param {string} text
+ * @param {import('gpui-kit').AsyncContext} cx
+ * @returns {Promise<Server>}
  */
-function showStatus(threadId, text) {
-  if (!panel) return;
-  const face = beginToolLaunch(context().threadId ?? null, threadId);
-  if (face.visible !== face.owner) return;
-  if (panel.hold > 0) {
-    panel.status = text;
-    panel.cx.notify();
-    return;
-  }
-  panel.apply(text, face.busy);
-}
-
-/**
- * @param {string} threadId
- * @param {string} text
- */
-async function finishToolLaunch(threadId, text) {
-  if (!panel) return;
-  const visible = context().threadId ?? null;
-  if (panel.hold > 0) {
-    if (visible === threadId) {
-      panel.status = text;
-      panel.cx.notify();
+async function boot(cx) {
+  const dirs = await serverDirs();
+  const token = connectionToken(new Uint8Array(randomBytes(24)));
+  const saved = Number(localStorage.getItem('port'));
+  let last = 'VSCodium did not start.';
+  for (const port of portOrder(Number.isInteger(saved) ? saved : null)) {
+    if (await answering(port)) {
+      last = 'VSCodium did not start. That port is already in use.';
+      continue;
     }
-    return;
+    const promise = run('codium', serveWebArgs({ port, token, dataDir: dirs.dataDir, cliDir: dirs.cliDir }), { timeoutMs: HOLD_MS });
+    /** @type {Server} */
+    const attempt = { port, token, promise };
+    try {
+      await waitReady(cx, attempt);
+      localStorage.setItem('port', String(port));
+      watch(attempt);
+      return attempt;
+    } catch (error) {
+      if (error instanceof PortInUse) {
+        last = `VSCodium did not start. ${error.message}`;
+        continue;
+      }
+      throw error;
+    }
   }
-  const step = endToolLaunch({ busy: panel.busy, visible, owner: threadId }, pending);
-  if (step.open) {
-    panel.apply(STARTING, true);
-    const outcome = await launch(step.open.args);
-    await finishToolLaunch(visible, outcome.text);
-    return;
-  }
-  if (visible === threadId) {
-    panel.apply(text, false);
-    return;
-  }
-  panel.pageMissing = true;
-  panel.apply(PAGE_MISSING, false);
+  throw new Error(last);
 }
 
 /**
- * @param {string[]} args
- * @returns {Promise<{ ok: boolean, text: string }>}
+ * The listener is ours only when it was down before this process, and this process is still up.
+ * `/version` does not ask for the connection token.
+ * @param {import('gpui-kit').AsyncContext} cx
+ * @param {Server} attempt
  */
-async function launch(args) {
-  const target = args[args.length - 1];
-  let result;
+async function waitReady(cx, attempt) {
+  /** @type {{ result?: { exitCode: number | null, stdout: string, stderr: string }, error?: unknown } | null} */
+  let settled = null;
+  attempt.promise.then(
+    (result) => {
+      settled = { result };
+    },
+    (error) => {
+      settled = { error };
+    },
+  );
+  for (;;) {
+    if (settled?.error) throw new Error(startError(settled.error, attempt.token));
+    if (settled?.result) {
+      const output = `${settled.result.stdout}\n${settled.result.stderr}`;
+      if (portBusy(output)) throw new PortInUse();
+      throw new Error(failureText(output, settled.result.exitCode, attempt.token));
+    }
+    if (await answering(attempt.port)) return;
+    await sleep(cx, POLL_MS);
+  }
+}
+
+/** @param {Server} attempt */
+function watch(attempt) {
+  attempt.promise.then(
+    (result) => {
+      if (running !== attempt) return;
+      running = null;
+      panel?.showFailure(failureText(`${result.stdout}\n${result.stderr}`, result.exitCode, attempt.token));
+    },
+    (error) => {
+      if (running !== attempt) return;
+      running = null;
+      const message = sentence(error);
+      if (/unloaded/.test(message)) return;
+      panel?.showFailure(scrub(message, attempt.token));
+    },
+  );
+}
+
+/**
+ * @param {number} port
+ * @returns {Promise<boolean>}
+ */
+async function answering(port) {
   try {
-    result = await run('codium', args, { timeoutMs: 15000 });
+    const response = await fetch(versionUrl(port));
+    return versionReady(response.status);
   } catch (error) {
-    return { ok: false, text: notFoundText(error) };
+    const message = sentence(error);
+    if (/not granted/i.test(message)) throw error;
+    return false;
   }
-  if (result.exitCode === 0) {
-    const text = args.includes('--goto') ? `Opened ${target}.` : `Opened the workspace ${target}.`;
-    return { ok: true, text };
+}
+
+/**
+ * @param {import('gpui-kit').AsyncContext} cx
+ * @param {number} ms
+ */
+function sleep(cx, ms) {
+  return new Promise((resolve) => {
+    cx.timer.after(ms, () => resolve());
+  });
+}
+
+/**
+ * @returns {Promise<{ dataDir: string, cliDir: string } | null>}
+ */
+async function serverDirs() {
+  const folders = serverFolders(proc.dataDir, os.tmpdir());
+  try {
+    await mkdir(folders.dataDir, { recursive: true });
+    await mkdir(folders.cliDir, { recursive: true });
+  } catch (error) {
+    log('warn', `VSCodium will create its server folders itself. ${sentence(error)}`);
   }
-  const detail = firstLine(result.stderr) || `exit code ${result.exitCode ?? 'none'}`;
-  return { ok: false, text: `VSCodium did not open it: ${detail}` };
+  return folders;
+}
+
+/**
+ * @param {unknown} error
+ * @param {string} token
+ */
+function startError(error, token) {
+  const message = sentence(error);
+  if (/not found/i.test(message)) return notFoundText(error);
+  return scrub(message, token);
 }
 
 /**
  * @param {string} threadId
- * @param {{ path?: unknown, line?: unknown }} request
- * @param {boolean} fromPanel
+ * @param {{ path?: unknown, line?: unknown, column?: unknown }} request
  * @returns {Promise<{ ok: boolean, text: string }>}
  */
-async function openFile(threadId, request, fromPanel) {
+async function openFile(threadId, request) {
   const roots = await threadRoots(threadId);
-  const path = resolveOpenPath(roots.workspace, roots.environment, roots.worktrees, request.path, roots.gitError);
-  const args = codiumArgs({ path, line: request.line });
-  const where = args[args.length - 1];
-  if (!fromPanel && !threadOnScreen(threadId)) {
-    pending.put(threadId, { args, where });
+  const file = resolveOpenPath(roots.workspace, roots.environment, roots.worktrees, request.path, roots.gitError);
+  const position = openPosition(request.line, request.column);
+  const where = openedWhere(file, position.line, position.column);
+  /** @type {OpenSpec} */
+  const spec = { path: file, ...position };
+  if (!threadOnScreen(threadId)) {
+    pending.put(threadId, spec);
     return { ok: true, text: laterText(where) };
   }
-  if (!fromPanel) pending.take(threadId);
-  showStatus(threadId, STARTING);
-  const outcome = await launch(args);
-  if (!fromPanel) await finishToolLaunch(threadId, outcome.text);
-  return outcome;
+  pending.put(threadId, spec);
+  try {
+    await openPanel('open');
+  } catch (error) {
+    if (!panel) return { ok: false, text: sentence(error) };
+  }
+  panel?.reveal(spec);
+  return { ok: true, text: openingText(where, Boolean(running)) };
 }
 
 /**
  * @param {string} threadId
- * @returns {Promise<{ workspace: string, environment: string | null, worktrees: string[], gitError: string | null }>}
+ * @returns {Promise<{ workspace: string, environment: string | null }>}
  */
-async function threadRoots(threadId) {
+async function workspaceOf(threadId) {
   const thread = await get(threadId);
   /** @type {string | null} */
   let environmentPath = null;
@@ -315,8 +421,17 @@ async function threadRoots(threadId) {
   }
   const workspace = environmentPath || (await project(thread.projectId)).path;
   if (!workspace) throw new Error('This thread has no workspace folder yet.');
-  const listed = await listWorktrees(workspace);
-  return { workspace, environment: environmentPath, worktrees: listed.paths, gitError: listed.error };
+  return { workspace, environment: environmentPath };
+}
+
+/**
+ * @param {string} threadId
+ * @returns {Promise<{ workspace: string, environment: string | null, worktrees: string[], gitError: string | null }>}
+ */
+async function threadRoots(threadId) {
+  const place = await workspaceOf(threadId);
+  const listed = await listWorktrees(place.workspace);
+  return { ...place, worktrees: listed.paths, gitError: listed.error };
 }
 
 /**
@@ -333,7 +448,7 @@ async function listWorktrees(folder) {
     }
     return { paths: worktreePaths(result.stdout), error: null };
   } catch (error) {
-    return { paths: [], error: error instanceof Error ? error.message : String(error) };
+    return { paths: [], error: sentence(error) };
   }
 }
 
@@ -351,15 +466,17 @@ function firstLine(text) {
 }
 
 /**
- * @param {import("kagan/jobs").Job} job
+ * @param {import('kagan/jobs').Job} job
  */
 async function handle(job) {
   if (job.kind === 'tool' && job.name === 'editor_open') {
     const threadId = typeof job.threadId === 'string' ? job.threadId : '';
     if (!threadId) return { text: 'editor_open needs a thread.', isError: true };
-    const input = job.input !== null && typeof job.input === 'object' ? /** @type {{ path?: unknown, line?: unknown }} */ (job.input) : {};
+    const input = job.input !== null && typeof job.input === 'object'
+      ? /** @type {{ path?: unknown, line?: unknown, column?: unknown }} */ (job.input)
+      : {};
     try {
-      const outcome = await openFile(threadId, input, false);
+      const outcome = await openFile(threadId, input);
       return { text: outcome.text, isError: !outcome.ok };
     } catch (error) {
       return { text: sentence(error), isError: true };
