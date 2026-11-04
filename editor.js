@@ -6,10 +6,9 @@ export const PENDING_MS = 10 * 60 * 1000;
 /** How long `codium serve-web` is kept. Unload kills it sooner. */
 export const HOLD_MS = 365 * 24 * 60 * 60 * 1000;
 
-/** Pause between checks that the page is answering. */
 export const POLL_MS = 300;
 
-/** First port to try. The last one that worked is tried first, when it is in range. */
+/** First port to try. The port that worked last time is tried first, when it is in range. */
 export const FIRST_PORT = 47321;
 
 /**
@@ -18,15 +17,12 @@ export const FIRST_PORT = 47321;
  */
 export const PORT_SPAN = 3;
 
-/** The host shows this when the page cannot be drawn. */
 export const ONLY_MACOS = 'This page works on macOS only for now.';
 
 const STARTING = 'Starting VSCodium. The first start can take a few minutes.';
 
-/** How long a started server may take to answer before the panel gives up on it. */
 export const START_DEADLINE_MS = 4 * 60 * 1000;
 
-/** The panel says this when the server does not answer in time. */
 export const STARTUP_TIMEOUT_TEXT = 'VSCodium took too long to start. Press Try again.';
 
 /**
@@ -39,7 +35,7 @@ export function startExpired(startedAt, now, limitMs = START_DEADLINE_MS) {
   return now - startedAt >= limitMs;
 }
 
-/** A failed start. `kind` picks the panel copy; `detail` is for the log only. */
+/** A failed start. `kind` picks the panel text. `detail` goes to the log only. */
 export class StartFailure extends Error {
   /** @param {string} kind @param {string} detail */
   constructor(kind, detail) {
@@ -62,7 +58,6 @@ export class StartFailure extends Error {
  */
 
 /**
- * Waits for one started process to answer, to end, or to run out of time.
  * @param {StartAttempt} attempt
  * @param {StartClock} clock
  * @param {number} deadlineMs
@@ -80,7 +75,6 @@ export async function awaitStart(attempt, clock, deadlineMs) {
 }
 
 /**
- * What the panel says, and what the log keeps, for a process that ended before it answered.
  * @param {StartAttempt} attempt
  * @param {Ended} ended
  * @returns {StartFailure}
@@ -128,7 +122,7 @@ export async function bringUp(env) {
 }
 
 /**
- * Check this on the raw error. A message that has already been made plain no longer says "not granted".
+ * Pass the raw error here. A message that has already been made plain no longer says "not granted".
  * @param {unknown} error
  * @returns {boolean}
  */
@@ -197,7 +191,6 @@ export function serveWebArgs(options) {
 }
 
 /**
- * The saved port first when it is one of the granted ports, then the rest, with no duplicates.
  * @param {unknown} saved
  * @returns {number[]}
  */
@@ -237,7 +230,6 @@ export function versionUrl(port) {
 }
 
 /**
- * A listener that is already up is not the one we are about to start.
  * @param {number} status
  * @returns {boolean}
  */
@@ -246,7 +238,7 @@ export function versionReady(status) {
 }
 
 /**
- * The editor reports a busy port on stdout and still exits 0.
+ * codium reports a busy port in its output and still exits 0, so the output is checked, not the exit code.
  * @param {string} output
  * @returns {boolean}
  */
@@ -389,7 +381,6 @@ export function editorPageUrl(options) {
 }
 
 /**
- * The reason `codium` could not start, for the log.
  * @param {unknown} error
  * @returns {string}
  */

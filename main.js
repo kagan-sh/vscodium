@@ -60,7 +60,7 @@ let starting = null;
 /** A start that timed out. Its process still runs, and the next start waits on it. @type {Server | null} */
 let stuck = null;
 
-/** How each started process ended, once it has. @type {Map<Server, { result?: { exitCode: number | null, stdout: string, stderr: string }, error?: unknown }>} */
+/** @type {Map<Server, { result?: { exitCode: number | null, stdout: string, stderr: string }, error?: unknown }>} */
 const ended = new Map();
 
 /** Every token this process has made, so the log can hide them. */
@@ -108,7 +108,6 @@ export class OpenPanel extends View {
     });
   }
 
-  /** Looks again at the thread on screen. Its own queued request, if any, opens. */
   reveal() {
     this.cx.spawn(() => this.sync());
   }
@@ -277,7 +276,6 @@ async function boot(cx) {
 }
 
 /**
- * Starts one `codium serve-web` on this port, with a new token.
  * @param {number} port
  * @param {{ dataDir: string, cliDir: string }} dirs
  * @returns {Server}
