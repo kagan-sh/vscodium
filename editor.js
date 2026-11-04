@@ -9,11 +9,14 @@ export const HOLD_MS = 365 * 24 * 60 * 60 * 1000;
 /** Pause between checks that the page is answering. */
 export const POLL_MS = 300;
 
-/** First port to try. The last one that worked is tried before this. */
+/** First port to try. The last one that worked is tried first, when it is in range. */
 export const FIRST_PORT = 47321;
 
-/** How many ports to try after the saved one. */
-export const PORT_SPAN = 32;
+/**
+ * How many ports to try. Each one is listed in kagan.json as a local fetch power,
+ * and the host allows at most eight local entries.
+ */
+export const PORT_SPAN = 3;
 
 /** The host shows this when the page cannot be drawn. */
 export const ONLY_MACOS = 'This page works on macOS only for now.';
@@ -80,33 +83,30 @@ export function serveWebArgs(options) {
 }
 
 /**
- * Saved port first, then a fixed range, with no duplicates.
+ * The saved port first when it is one of the granted ports, then the rest, with no duplicates.
  * @param {unknown} saved
  * @returns {number[]}
  */
 export function portOrder(saved) {
   /** @type {number[]} */
   const ports = [];
-  const push = (/** @type {unknown} */ port) => {
-    if (!Number.isInteger(port) || /** @type {number} */ (port) < 1 || /** @type {number} */ (port) > 65535) return;
-    if (!ports.includes(/** @type {number} */ (port))) ports.push(/** @type {number} */ (port));
-  };
-  push(saved);
-  for (let offset = 0; offset < PORT_SPAN; offset += 1) push(FIRST_PORT + offset);
+  for (let offset = 0; offset < PORT_SPAN; offset += 1) ports.push(FIRST_PORT + offset);
+  if (ports.includes(/** @type {number} */ (saved))) {
+    return [/** @type {number} */ (saved), ...ports.filter((port) => port !== saved)];
+  }
   return ports;
 }
 
 /**
- * Server files stay in the plugin data folder when the host names one.
- * Otherwise they stay under the temporary folder, away from the editor's own profile.
- * The runtime has no temporary-directory call, and this page only starts on macOS, where `/tmp` exists.
- * @param {string | null | undefined} dataDir
+ * Server files stay in the plugin data folder, which the host names.
+ * @param {unknown} dataDir
  * @returns {{ dataDir: string, cliDir: string }}
  */
 export function serverFolders(dataDir) {
-  const base = typeof dataDir === 'string' && dataDir.startsWith('/')
-    ? dataDir.replace(/\/+$/, '')
-    : '/tmp/kagan-vscodium';
+  if (typeof dataDir !== 'string' || !dataDir.startsWith('/')) {
+    throw new Error('The plugin data folder is missing.');
+  }
+  const base = dataDir.replace(/\/+$/, '');
   return {
     dataDir: `${base}/server`,
     cliDir: `${base}/cli`,

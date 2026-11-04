@@ -342,7 +342,6 @@ async function answering(port) {
     return versionReady(response.status);
   } catch (error) {
     const message = sentence(error);
-    // A fetch grant is HTTPS on port 443. This check is plain HTTP on a free port, so the host refuses it.
     if (/not granted/i.test(message)) throw error;
     return false;
   }
@@ -359,13 +358,10 @@ function sleep(cx, ms) {
 }
 
 /**
- * @returns {Promise<{ dataDir: string, cliDir: string } | null>}
+ * @returns {Promise<{ dataDir: string, cliDir: string }>}
  */
 async function serverDirs() {
   const folders = serverFolders(proc.dataDir);
-  // The host names no data directory today, and a path outside the grant cannot be created here.
-  // The editor process creates the temporary folders itself.
-  if (typeof proc.dataDir !== 'string' || !proc.dataDir.startsWith('/')) return folders;
   await mkdir(folders.dataDir, { recursive: true });
   await mkdir(folders.cliDir, { recursive: true });
   return folders;

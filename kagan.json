@@ -7,7 +7,11 @@
   "instructions": "The VSCodium panel sits on the right. It starts one local editor and shows that page for the thread on screen. editor_open takes a path relative to the thread workspace, or an absolute path inside that workspace, the thread environment, or a sibling git worktree of that repo. Pass line to jump to that line, and column to move across the line. If the thread is on screen, the panel opens. If it is off screen, the file opens the next time this panel is shown. Only the latest request is kept, for 10 minutes.",
   "powers": {
     "run": [{ "program": "codium" }, { "program": "git" }],
-    "fetch": [{ "host": "127.0.0.1", "methods": ["GET"] }],
+    "fetch": [
+      { "host": "http://127.0.0.1:47321", "methods": ["GET"] },
+      { "host": "http://127.0.0.1:47322", "methods": ["GET"] },
+      { "host": "http://127.0.0.1:47323", "methods": ["GET"] }
+    ],
     "areas": ["process", "threads"]
   },
   "ui": {

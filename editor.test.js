@@ -60,22 +60,19 @@ test('the connection token is hex from the random bytes', () => {
   assert.throws(() => connectionToken(new Uint8Array(8)), /16 random bytes/);
 });
 
-test('server files stay in the plugin data folder, or under a temporary folder', () => {
-  assert.deepEqual(serverFolders('/data/plugins/vscodium/data'), {
+test('server files stay in the plugin data folder', () => {
+  assert.deepEqual(serverFolders('/data/plugins/vscodium/data/'), {
     dataDir: '/data/plugins/vscodium/data/server',
     cliDir: '/data/plugins/vscodium/data/cli',
   });
-  assert.deepEqual(serverFolders(undefined), {
-    dataDir: '/tmp/kagan-vscodium/server',
-    cliDir: '/tmp/kagan-vscodium/cli',
-  });
+  assert.throws(() => serverFolders(undefined), /data folder is missing/);
 });
 
-test('the saved port is tried first, then a fixed range, once each', () => {
-  const ports = portOrder(FIRST_PORT + 3);
-  assert.equal(ports[0], FIRST_PORT + 3);
-  assert.equal(ports.length, PORT_SPAN);
-  assert.deepEqual(portOrder('nope').slice(0, 2), [FIRST_PORT, FIRST_PORT + 1]);
+test('the saved port is tried first when it is granted, then the rest once each', () => {
+  assert.deepEqual(portOrder(FIRST_PORT + 2), [FIRST_PORT + 2, FIRST_PORT, FIRST_PORT + 1]);
+  assert.equal(portOrder(FIRST_PORT).length, PORT_SPAN);
+  assert.deepEqual(portOrder('nope'), [FIRST_PORT, FIRST_PORT + 1, FIRST_PORT + 2]);
+  assert.deepEqual(portOrder(FIRST_PORT + 99), [FIRST_PORT, FIRST_PORT + 1, FIRST_PORT + 2]);
 });
 
 test('the page address stays on this machine and names the folder', () => {
