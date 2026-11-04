@@ -238,6 +238,10 @@ function ensureServer() {
     (server) => {
       running = server;
       starting = null;
+      // A panel view can be replaced while this start runs, and the view that waited is
+      // then gone. The newest view has to be told the server is ready, or it sits on
+      // "Starting VSCodium" until something else changes the context.
+      panel?.reveal();
       return server;
     },
     (error) => {

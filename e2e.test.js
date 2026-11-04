@@ -48,7 +48,7 @@ test('the editor opens the file at the line and column the tool asked for', {
       '--server-data-dir', join(root, 'server'),
       '--cli-data-dir', join(root, 'cli'),
     ],
-    { stdio: 'ignore' },
+    { stdio: 'ignore', detached: true },
   );
   /** @type {import('node:child_process').ChildProcess | null} */
   let chrome = null;
@@ -63,7 +63,7 @@ test('the editor opens the file at the line and column the tool asked for', {
 
     const url = editorPageUrl({ port, token, folder, file, line: LINE, column: COLUMN });
     const profile = join(root, 'browser');
-    chrome = spawn(browser, headlessArgs(profile, url), { stdio: 'ignore' });
+    chrome = spawn(browser, headlessArgs(profile, url), { stdio: 'ignore', detached: true });
     const debugPort = await waitFor(async () => {
       const [first] = (await readFile(join(profile, 'DevToolsActivePort'), 'utf8')).split('\n');
       return Number(first) || null;
@@ -82,11 +82,26 @@ test('the editor opens the file at the line and column the tool asked for', {
       client.close();
     }
   } finally {
-    chrome?.kill();
-    server.kill();
+    // `codium` is a shell script that starts the real server as a child, so killing it
+    // alone leaves the server on its port. The whole group goes.
+    killGroup(chrome);
+    killGroup(server);
     await rm(root, { recursive: true, force: true });
   }
 });
+
+/**
+ * Kills a process and everything it started.
+ * @param {import('node:child_process').ChildProcess | null} child
+ */
+function killGroup(child) {
+  if (!child?.pid) return;
+  try {
+    process.kill(-child.pid, 'SIGKILL');
+  } catch {
+    child.kill('SIGKILL');
+  }
+}
 
 /** @returns {Promise<number>} */
 function freePort() {

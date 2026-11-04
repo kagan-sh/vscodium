@@ -1,7 +1,7 @@
 {
   "id": "dev.kagan.vscodium",
   "name": "VSCodium",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "kagan": ">=0.1.0",
   "entry": "main.js",
   "instructions": "The VSCodium panel sits on the right. It starts one local editor and shows that page for the thread on screen. editor_open takes a path relative to the thread's folder, or an absolute path inside it. A path that leads out of the folder, through a link or otherwise, is refused. Pass line to jump to that line, and column to move across the line. If the thread is on screen, the panel opens. If it is off screen, the file opens the next time this panel is shown. Only the latest request is kept, for 10 minutes.",
