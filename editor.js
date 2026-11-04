@@ -3,12 +3,12 @@
 /** How long an off-screen editor_open is kept. */
 export const PENDING_MS = 10 * 60 * 1000;
 
-/** How long `codium serve-web` is kept. Unload kills it sooner. */
+/** How long `codium serve-web` may run. Unloading the plugin stops it sooner. */
 export const HOLD_MS = 365 * 24 * 60 * 60 * 1000;
 
 export const POLL_MS = 300;
 
-/** First port to try. The port that worked last time is tried first, when it is in range. */
+/** First port to try. */
 export const FIRST_PORT = 47321;
 
 /**
@@ -205,7 +205,6 @@ export function portOrder(saved) {
 }
 
 /**
- * Server files stay in the plugin data folder, which the host names.
  * @param {unknown} dataDir
  * @returns {{ dataDir: string, cliDir: string }}
  */
@@ -279,7 +278,6 @@ export function panelText(kind) {
 }
 
 /**
- * The full process output for the log, with the connection token removed.
  * @param {string} output
  * @param {number | null | undefined} exitCode
  * @param {string} token
@@ -339,7 +337,7 @@ export { STARTING };
 
 /**
  * The page reads `folder` and `payload` once, at startup.
- * `gotoLineMode` makes it take `:line:column` off the file path.
+ * `gotoLineMode` tells it to read `:line:column` from the file path.
  * The file address uses the same host and port the page was served from.
  * @param {{ port: number, token: string, folder: string, file?: string | null, line?: number, column?: number }} options
  * @returns {string}
