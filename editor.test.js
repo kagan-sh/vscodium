@@ -27,7 +27,6 @@ import {
   serveWebArgs,
   versionReady,
   versionUrl,
-  worktreePaths,
 } from './editor.js';
 
 const token = 'ab'.repeat(16);
@@ -176,62 +175,63 @@ test('insideFolder matches Node for ordinary paths', () => {
   }
 });
 
-test('a relative path opens inside the thread workspace', () => {
-  assert.equal(resolveOpenPath(workspace, environment, [sibling], 'src/a.ts'), `${workspace}/src/a.ts`);
+const disk = (entries) => async (file) => (file in entries ? entries[file] : null);
+const tree = disk({
+  [workspace]: workspace,
+  [`${workspace}/src`]: `${workspace}/src`,
+  [`${workspace}/src/a.ts`]: `${workspace}/src/a.ts`,
+  [`${workspace}/link`]: '/etc',
+  [`${workspace}/out`]: sibling,
+  [sibling]: sibling,
+  [`${sibling}/src/x.ts`]: `${sibling}/src/x.ts`,
 });
 
-test('a relative path cannot climb out, even into a sibling worktree', () => {
-  assert.throws(
-    () => resolveOpenPath(workspace, environment, [sibling], '../frontend-257/src/a.ts'),
-    /leaves the thread workspace/,
-  );
+test('a relative path opens inside the thread folder', async () => {
+  assert.equal(await resolveOpenPath(workspace, 'src/a.ts', tree), `${workspace}/src/a.ts`);
 });
 
-test('an absolute path opens inside the workspace, the environment, or a sibling worktree', () => {
-  assert.equal(
-    resolveOpenPath(workspace, environment, [sibling], `${workspace}/src/a.ts`),
-    `${workspace}/src/a.ts`,
-  );
-  assert.equal(
-    resolveOpenPath(workspace, '/bb/env/checkout', [], '/bb/env/checkout/notes.txt'),
-    '/bb/env/checkout/notes.txt',
-  );
-  assert.equal(
-    resolveOpenPath(workspace, environment, [sibling], `${sibling}/src/x.ts`),
-    `${sibling}/src/x.ts`,
-  );
+test('a file that does not exist yet opens inside the thread folder', async () => {
+  assert.equal(await resolveOpenPath(workspace, 'src/new.ts', tree), `${workspace}/src/new.ts`);
 });
 
-test('an absolute path outside those roots is refused, and the sentence says why', () => {
-  assert.throws(
-    () => resolveOpenPath(workspace, environment, [sibling], '/etc/passwd'),
-    /outside the thread workspace, its environment, and this repo's other git worktrees/,
-  );
-  assert.throws(
-    () => resolveOpenPath(workspace, environment, [sibling], `${workspace}-other/x.ts`),
-    /outside the thread workspace/,
-  );
-  assert.throws(
-    () => resolveOpenPath(workspace, environment, [sibling], `${sibling}/../../../../etc/passwd`),
-    /outside the thread workspace/,
-  );
+test('a relative path cannot climb out, even into a sibling worktree', async () => {
+  await assert.rejects(resolveOpenPath(workspace, '../frontend-257/src/a.ts', tree), /leaves this thread's folder/);
 });
 
-test('when git cannot list worktrees, the refusal says so', () => {
-  assert.throws(
-    () => resolveOpenPath(workspace, null, [], '/etc/passwd', 'git failed'),
-    /Git could not list this repo's other worktrees: git failed/,
-  );
+test('a sibling worktree is outside the thread folder', async () => {
+  await assert.rejects(resolveOpenPath(workspace, `${sibling}/src/x.ts`, tree), /is outside this thread's folder/);
 });
 
-test('an empty path is refused', () => {
-  assert.throws(() => resolveOpenPath(workspace, environment, [], ''), /The path is empty/);
-  assert.throws(() => resolveOpenPath(workspace, environment, [], '   '), /The path is empty/);
+test('a symbolic link inside the folder that points outside is refused', async () => {
+  await assert.rejects(resolveOpenPath(workspace, 'link/passwd', tree), /is outside this thread's folder/);
 });
 
-test('git worktree porcelain lists every worktree folder', () => {
-  const porcelain = [`worktree ${workspace}`, 'HEAD abc', 'branch refs/heads/main', '', `worktree ${sibling}`, 'HEAD def', ''].join('\n');
-  assert.deepEqual(worktreePaths(porcelain), [workspace, sibling]);
+test('a folder in the thread that links to a sibling worktree is refused', async () => {
+  await assert.rejects(resolveOpenPath(workspace, 'out/x.ts', tree), /is outside this thread's folder/);
+});
+
+test('the check uses real locations, so a folder reached through a link still works', async () => {
+  const linked = disk({ '/link/app': '/real/app', '/link/app/a.ts': '/real/app/a.ts' });
+  assert.equal(await resolveOpenPath('/link/app', 'a.ts', linked), '/link/app/a.ts');
+});
+
+test('an absolute path inside the thread folder opens', async () => {
+  assert.equal(await resolveOpenPath(workspace, `${workspace}/src/a.ts`, tree), `${workspace}/src/a.ts`);
+});
+
+test('an absolute path outside the thread folder is refused', async () => {
+  await assert.rejects(resolveOpenPath(workspace, '/etc/passwd', tree), /is outside this thread's folder/);
+  await assert.rejects(resolveOpenPath(workspace, `${workspace}-other/x.ts`, tree), /is outside this thread's folder/);
+  await assert.rejects(resolveOpenPath(workspace, `${sibling}/../../../../etc/passwd`, tree), /is outside this thread's folder/);
+});
+
+test('a thread folder that cannot be read refuses every path', async () => {
+  await assert.rejects(resolveOpenPath('/gone', 'a.ts', disk({})), /cannot be read/);
+});
+
+test('an empty path is refused', async () => {
+  await assert.rejects(resolveOpenPath(workspace, '', tree), /The path is empty/);
+  await assert.rejects(resolveOpenPath(workspace, '   ', tree), /The path is empty/);
 });
 
 test('an off-screen open says it waits for the panel', () => {

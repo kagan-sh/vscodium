@@ -4,9 +4,9 @@
   "version": "0.2.0",
   "kagan": ">=0.1.0",
   "entry": "main.js",
-  "instructions": "The VSCodium panel sits on the right. It starts one local editor and shows that page for the thread on screen. editor_open takes a path relative to the thread workspace, or an absolute path inside that workspace, the thread environment, or a sibling git worktree of that repo. Pass line to jump to that line, and column to move across the line. If the thread is on screen, the panel opens. If it is off screen, the file opens the next time this panel is shown. Only the latest request is kept, for 10 minutes.",
+  "instructions": "The VSCodium panel sits on the right. It starts one local editor and shows that page for the thread on screen. editor_open takes a path relative to the thread's folder, or an absolute path inside it. A path that leads out of the folder, through a link or otherwise, is refused. Pass line to jump to that line, and column to move across the line. If the thread is on screen, the panel opens. If it is off screen, the file opens the next time this panel is shown. Only the latest request is kept, for 10 minutes.",
   "powers": {
-    "run": [{ "program": "codium" }, { "program": "git" }],
+    "run": [{ "program": "codium" }, { "program": "realpath" }],
     "fetch": [
       { "host": "http://127.0.0.1:47321", "methods": ["GET"] },
       { "host": "http://127.0.0.1:47322", "methods": ["GET"] },
@@ -28,7 +28,7 @@
   "tools": [
     {
       "name": "editor_open",
-      "description": "Open a file in the VSCodium panel, optionally at a line and column. The path is relative to the thread workspace, or absolute inside that workspace, the thread environment, or a sibling git worktree of that repo. If the thread is on screen, the panel opens. If it is off screen, the file opens the next time the panel is shown. Replies with whether it opened.",
+      "description": "Open a file in the VSCodium panel, optionally at a line and column. The path is relative to the thread's folder, or absolute inside it. A path that leads out of the folder is refused. If the thread is on screen, the panel opens. If it is off screen, the file opens the next time the panel is shown. Replies with whether it opened.",
       "input": "schemas/editor_open.json",
       "scope": "all"
     }

@@ -31,7 +31,6 @@ import {
   serveWebArgs,
   versionReady,
   versionUrl,
-  worktreePaths,
   createPending,
   PENDING_MS,
 } from './editor.js';
@@ -383,8 +382,8 @@ function startError(error, token) {
  * @returns {Promise<{ ok: boolean, text: string }>}
  */
 async function openFile(threadId, request) {
-  const roots = await threadRoots(threadId);
-  const file = resolveOpenPath(roots.workspace, roots.environment, roots.worktrees, request.path, roots.gitError);
+  const place = await workspaceOf(threadId);
+  const file = await resolveOpenPath(place.workspace, request.path, realpathOf);
   const position = openPosition(request.line, request.column);
   const where = openedWhere(file, position.line, position.column);
   /** @type {OpenSpec} */
@@ -421,31 +420,19 @@ async function workspaceOf(threadId) {
 }
 
 /**
- * @param {string} threadId
- * @returns {Promise<{ workspace: string, environment: string | null, worktrees: string[], gitError: string | null }>}
+ * The real location of a path, or null when it does not exist. Uses the `realpath` program the plugin is granted.
+ * @param {string} path
+ * @returns {Promise<string | null>}
  */
-async function threadRoots(threadId) {
-  const place = await workspaceOf(threadId);
-  const listed = await listWorktrees(place.workspace);
-  return { ...place, worktrees: listed.paths, gitError: listed.error };
+async function realpathOf(path) {
+  const result = await run('realpath', [path], { timeoutMs: 5000 });
+  if (result.exitCode !== 0) return null;
+  return firstLine(result.stdout) || null;
 }
 
-/**
- * @param {string} folder
- * @returns {Promise<{ paths: string[], error: string | null }>}
- */
-async function listWorktrees(folder) {
-  try {
-    const result = await run('git', ['worktree', 'list', '--porcelain'], { cwd: folder, timeoutMs: 5000 });
-    if (result.exitCode !== 0) {
-      const detail = firstLine(result.stderr) || `exit code ${result.exitCode ?? 'none'}`;
-      if (/not a git repository/i.test(detail)) return { paths: [], error: null };
-      return { paths: [], error: detail };
-    }
-    return { paths: worktreePaths(result.stdout), error: null };
-  } catch (error) {
-    return { paths: [], error: sentence(error) };
-  }
+/** @param {string} text */
+function firstLine(text) {
+  return text.split('\n').map((line) => line.trim()).find(Boolean) ?? '';
 }
 
 /**
@@ -458,11 +445,6 @@ function sentence(error) {
     return 'VSCodium did not start. Checking the local page is not allowed yet.';
   }
   return message;
-}
-
-/** @param {string} text */
-function firstLine(text) {
-  return text.split('\n').map((line) => line.trim()).find(Boolean) ?? '';
 }
 
 /**

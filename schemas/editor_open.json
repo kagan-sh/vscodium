@@ -3,7 +3,7 @@
   "properties": {
     "path": {
       "type": "string",
-      "description": "Path relative to the thread workspace, or an absolute path inside that workspace, the thread environment, or a sibling git worktree of that repo."
+      "description": "Path relative to the thread's folder, or an absolute path inside it. A path that leads out of the folder, through a link or otherwise, is refused."
     },
     "line": {
       "type": "integer",

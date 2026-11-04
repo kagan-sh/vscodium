@@ -264,19 +264,6 @@ export function notFoundText(error) {
 }
 
 /**
- * Folders `git worktree list --porcelain` names.
- * @param {string} porcelain
- * @returns {string[]}
- */
-export function worktreePaths(porcelain) {
-  return porcelain.split('\n').flatMap((line) => {
-    if (!line.startsWith('worktree ')) return [];
-    const folder = line.slice('worktree '.length).trim();
-    return folder ? [folder] : [];
-  });
-}
-
-/**
  * @param {string} folder
  * @param {string} file
  * @returns {string | null}
@@ -290,51 +277,56 @@ export function insideFolder(folder, file) {
 }
 
 /**
- * A relative path stays in the workspace.
- * An absolute path may sit in the workspace, the thread environment, or a git worktree of that repo.
- * @param {string} workspace
- * @param {string | null} environment
- * @param {readonly string[]} worktrees
- * @param {unknown} file
- * @param {string | null} [gitError]
- * @returns {string}
+ * The real location of `full`: the nearest folder that exists, resolved, with the missing parts added back.
+ * @param {string} full
+ * @param {(path: string) => Promise<string | null>} realpathOf answers null when the path does not exist
+ * @returns {Promise<string | null>}
  */
-export function resolveOpenPath(workspace, environment, worktrees, file, gitError = null) {
+export async function realLocation(full, realpathOf) {
+  /** @type {string[]} */
+  const missing = [];
+  let probe = full;
+  for (;;) {
+    const real = await realpathOf(probe);
+    if (real !== null) return resolvePath(real, ...missing);
+    if (probe === '/') return null;
+    const cut = probe.lastIndexOf('/');
+    missing.unshift(probe.slice(cut + 1));
+    probe = cut <= 0 ? '/' : probe.slice(0, cut);
+  }
+}
+
+/**
+ * A file opens only when its real location is inside the thread's own folder, so symbolic links cannot lead out.
+ * @param {string} folder the thread's folder: its environment when it has one, else its project folder
+ * @param {unknown} file
+ * @param {(path: string) => Promise<string | null>} realpathOf answers null when the path does not exist
+ * @returns {Promise<string>}
+ */
+export async function resolveOpenPath(folder, file, realpathOf) {
   if (typeof file !== 'string' || file.trim() === '') {
     throw new Error('The path is empty.');
   }
   if (/[\0\r\n]/.test(file)) {
     throw new Error('The path has a line break or a NUL character.');
   }
-  const path = file.trim();
-  if (!workspace.startsWith('/')) {
+  if (!folder.startsWith('/')) {
     throw new Error('This thread has no workspace folder yet.');
   }
-  if (!path.startsWith('/')) {
-    const full = insideFolder(workspace, path);
-    if (!full) {
-      throw new Error(`${path} leaves the thread workspace, and a relative path has to stay inside it.`);
-    }
-    return full;
+  const path = file.trim();
+  const full = insideFolder(folder, path);
+  if (!full) {
+    throw new Error(path.startsWith('/')
+      ? `${path} is outside this thread's folder.`
+      : `${path} leaves this thread's folder. A relative path has to stay inside it.`);
   }
-  const roots = [];
-  for (const root of [workspace, environment, ...worktrees]) {
-    if (typeof root !== 'string' || !root.startsWith('/')) continue;
-    const full = resolvePath(root);
-    if (!roots.includes(full)) roots.push(full);
+  const realFolder = await realpathOf(folder);
+  if (realFolder === null) throw new Error("This thread's folder cannot be read.");
+  const real = await realLocation(full, realpathOf);
+  if (real === null || insideFolder(realFolder, real) === null) {
+    throw new Error(`${path} is outside this thread's folder.`);
   }
-  for (const root of roots) {
-    const full = insideFolder(root, path);
-    if (full) return full;
-  }
-  if (gitError) {
-    throw new Error(
-      `${path} is outside the thread workspace and its environment. Git could not list this repo's other worktrees: ${gitError}`,
-    );
-  }
-  throw new Error(
-    `${path} is outside the thread workspace, its environment, and this repo's other git worktrees.`,
-  );
+  return full;
 }
 
 /**

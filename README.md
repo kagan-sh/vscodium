@@ -19,7 +19,7 @@ Open a thread's folder in VSCodium, in the right panel.
 ## What the install screen asks you to allow
 
 - Runs `codium`, to start the editor server.
-- Runs `git`, to list a repo's other worktrees, so files in them can open.
+- Runs `realpath`, to check where a file really is before it opens. Only files inside the thread's folder open.
 - Talks to programs on this computer, on ports 47321 to 47323, to check the editor server is up.
 
 ## Limits
