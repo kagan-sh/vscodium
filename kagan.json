@@ -1,12 +1,12 @@
 {
   "id": "dev.kagan.vscodium",
   "name": "VSCodium",
-  "version": "0.2.2",
+  "version": "0.3.0",
   "kagan": ">=0.1.0",
   "entry": "main.js",
-  "instructions": "The VSCodium panel sits on the right. It starts one local editor and shows that page for the thread on screen. editor_open takes a path relative to the thread's folder, or an absolute path inside it. A path that leads out of the folder, through a link or otherwise, is refused. Pass line to jump to that line, and column to move across the line. If the thread is on screen, the panel opens. If it is off screen, the file opens the next time this panel is shown. Only the latest request is kept, for 10 minutes.",
+  "instructions": "The VSCodium panel sits on the right. It starts one local editor and shows that page for the thread on screen. editor_open takes a path relative to the thread's folder, or an absolute path inside it. An absolute path also opens when it sits in another project or environment the window lists, or in a git worktree of one; every other path is refused, and so is a relative path that climbs out, through a link or otherwise. Pass line to jump to that line, and column to move across the line. If the thread is on screen, the panel opens. If it is off screen, the file opens the next time this panel is shown. Only the latest request per thread is kept, for 10 minutes. kg vscodium open [--environment <id>] [<folder>] opens the panel for a folder instead of the thread on screen.",
   "powers": {
-    "run": [{ "program": "codium" }, { "program": "realpath" }],
+    "run": [{ "program": "codium" }, { "program": "realpath" }, { "program": "git" }],
     "fetch": [
       { "host": "http://127.0.0.1:47321", "methods": ["GET"] },
       { "host": "http://127.0.0.1:47322", "methods": ["GET"] },
@@ -14,6 +14,21 @@
     ],
     "areas": ["process", "threads"]
   },
+  "commands": [
+    {
+      "id": "open",
+      "title": "VSCodium: open",
+      "when": "thread"
+    }
+  ],
+  "cli": [
+    {
+      "name": "vscodium",
+      "commands": [
+        { "name": "open", "usage": "open [--environment <id>] [<folder>]" }
+      ]
+    }
+  ],
   "ui": {
     "panels": [
       {
@@ -28,7 +43,7 @@
   "tools": [
     {
       "name": "editor_open",
-      "description": "Open a file in the VSCodium panel, optionally at a line and column. The path is relative to the thread's folder, or absolute inside it. A path that leads out of the folder is refused. If the thread is on screen, the panel opens. If it is off screen, the file opens the next time the panel is shown. Replies with whether it opened.",
+      "description": "Open a file in the VSCodium panel, optionally at a line and column. A relative path is inside the thread's folder; an absolute path may also be inside another environment the window lists, or a git worktree of one. Every other path is refused. If the thread is on screen, the panel opens. If it is off screen, the file opens the next time the panel is shown. Replies with whether it opened.",
       "input": "schemas/editor_open.json",
       "scope": "all"
     }

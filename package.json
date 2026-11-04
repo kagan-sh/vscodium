@@ -4,6 +4,6 @@
   "type": "module",
   "scripts": {
     "test": "node --test",
-    "test:e2e": "KG_E2E=1 node --test e2e.test.js"
+    "test:e2e": "KG_E2E=1 node --test test/e2e.test.js"
   }
 }

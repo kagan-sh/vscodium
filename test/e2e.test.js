@@ -2,7 +2,7 @@
 // End to end: the real editor, loaded through this plugin's page URL, puts the cursor
 // on the line and column the tool asked for.
 // Run with `npm run test:e2e`. It needs `codium` and a Chromium on this machine, and
-// a browser that cannot be found skips the test instead of failing it.
+// skips itself (rather than passing) when either is missing.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -12,7 +12,8 @@ import { access, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:f
 import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { editorPageUrl } from './editor.js';
+import { editorPageUrl } from '../page.js';
+import { connectionToken, serveWebArgs } from '../server.js';
 
 const LINE = 12;
 const COLUMN = 3;
@@ -20,11 +21,11 @@ const COLUMN = 3;
 test('the editor opens the file at the line and column the tool asked for', {
   timeout: 180_000,
   skip: process.env.KG_E2E ? false : 'set KG_E2E=1 to run it, or use npm run test:e2e',
-}, async () => {
+}, async (t) => {
   const browser = await findBrowser();
-  if (!browser) return; // Nothing to drive the page with on this machine.
+  if (!browser) return t.skip('no Chromium on this machine');
   const codium = which('codium');
-  if (!codium) return; // The plugin cannot start the editor either, so there is nothing to test.
+  if (!codium) return t.skip('codium is not on PATH');
 
   const root = await mkdtemp(join(tmpdir(), 'vscodium-e2e-'));
   const folder = join(root, 'workspace');
@@ -33,21 +34,12 @@ test('the editor opens the file at the line and column the tool asked for', {
   lines[LINE - 1] = 'const marked = "this is the line";';
   await mkdir(folder, { recursive: true });
   await writeFile(file, lines.join('\n'));
-  const token = randomBytes(24).toString('hex');
+  const token = connectionToken(new Uint8Array(randomBytes(24)));
   const port = await freePort();
+  // The same command the plugin runs, so the test proves the real arguments.
   const server = spawn(
     codium,
-    [
-      'serve-web',
-      '--host', '127.0.0.1',
-      '--port', String(port),
-      '--connection-token', token,
-      '--accept-server-license-terms',
-      '--disable-telemetry',
-      '--log', 'off',
-      '--server-data-dir', join(root, 'server'),
-      '--cli-data-dir', join(root, 'cli'),
-    ],
+    serveWebArgs({ port, token, dataDir: join(root, 'server'), cliDir: join(root, 'cli') }),
     { stdio: 'ignore', detached: true },
   );
   /** @type {import('node:child_process').ChildProcess | null} */

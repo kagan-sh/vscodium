@@ -3,7 +3,7 @@
   "properties": {
     "path": {
       "type": "string",
-      "description": "Path relative to the thread's folder, or an absolute path inside it. A path that leads out of the folder, through a link or otherwise, is refused."
+      "description": "Path relative to the thread's folder, or an absolute path inside it, inside another project or environment the window lists, or inside a git worktree of one. Any other path is refused, including one that leads out through a link."
     },
     "line": {
       "type": "integer",
