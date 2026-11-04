@@ -324,30 +324,10 @@ export function insideFolder(folder, file) {
 }
 
 /**
- * The real location of `full`: the nearest folder that exists, resolved, with the missing parts added back.
- * @param {string} full
- * @param {(path: string) => Promise<string | null>} realpathOf answers null when the path does not exist
- * @returns {Promise<string | null>}
- */
-export async function realLocation(full, realpathOf) {
-  /** @type {string[]} */
-  const missing = [];
-  let probe = full;
-  for (;;) {
-    const real = await realpathOf(probe);
-    if (real !== null) return resolvePath(real, ...missing);
-    if (probe === '/') return null;
-    const cut = probe.lastIndexOf('/');
-    missing.unshift(probe.slice(cut + 1));
-    probe = cut <= 0 ? '/' : probe.slice(0, cut);
-  }
-}
-
-/**
  * A file opens only when its real location is inside the thread's own folder, so symbolic links cannot lead out.
  * @param {string} folder the thread's folder: its environment when it has one, else its project folder
  * @param {unknown} file
- * @param {(path: string) => Promise<string | null>} realpathOf answers null when the path does not exist
+ * @param {(path: string) => Promise<string | null>} realpathOf answers null when the path does not resolve
  * @returns {Promise<string>}
  */
 export async function resolveOpenPath(folder, file, realpathOf) {
@@ -369,8 +349,12 @@ export async function resolveOpenPath(folder, file, realpathOf) {
   }
   const realFolder = await realpathOf(folder);
   if (realFolder === null) throw new Error("This thread's folder cannot be read.");
-  const real = await realLocation(full, realpathOf);
-  if (real === null || insideFolder(realFolder, real) === null) {
+  // Only an existing file opens. A dangling link, or a path behind one, does not resolve, so it is refused.
+  const real = await realpathOf(full);
+  if (real === null) {
+    throw new Error(`${path} cannot be opened. It must be an existing file inside this thread's folder.`);
+  }
+  if (insideFolder(realFolder, real) === null) {
     throw new Error(`${path} is outside this thread's folder.`);
   }
   return full;

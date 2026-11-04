@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import {
   FIRST_PORT,
   PENDING_MS,
@@ -210,7 +213,9 @@ const tree = disk({
   [`${workspace}/src`]: `${workspace}/src`,
   [`${workspace}/src/a.ts`]: `${workspace}/src/a.ts`,
   [`${workspace}/link`]: '/etc',
+  [`${workspace}/link/passwd`]: '/etc/passwd',
   [`${workspace}/out`]: sibling,
+  [`${workspace}/out/x.ts`]: `${sibling}/x.ts`,
   [sibling]: sibling,
   [`${sibling}/src/x.ts`]: `${sibling}/src/x.ts`,
 });
@@ -219,8 +224,8 @@ test('a relative path opens inside the thread folder', async () => {
   assert.equal(await resolveOpenPath(workspace, 'src/a.ts', tree), `${workspace}/src/a.ts`);
 });
 
-test('a file that does not exist yet opens inside the thread folder', async () => {
-  assert.equal(await resolveOpenPath(workspace, 'src/new.ts', tree), `${workspace}/src/new.ts`);
+test('a file that does not exist is refused, because nothing can be checked behind it', async () => {
+  await assert.rejects(resolveOpenPath(workspace, 'src/new.ts', tree), /cannot be opened/);
 });
 
 test('a relative path cannot climb out, even into a sibling worktree', async () => {
@@ -252,6 +257,45 @@ test('an absolute path outside the thread folder is refused', async () => {
   await assert.rejects(resolveOpenPath(workspace, '/etc/passwd', tree), /is outside this thread's folder/);
   await assert.rejects(resolveOpenPath(workspace, `${workspace}-other/x.ts`, tree), /is outside this thread's folder/);
   await assert.rejects(resolveOpenPath(workspace, `${sibling}/../../../../etc/passwd`, tree), /is outside this thread's folder/);
+});
+
+function realpathProgram(target) {
+  return new Promise((resolve, reject) => {
+    execFile('realpath', [target], (error, stdout) => {
+      if (!error) resolve(stdout.trim());
+      else if (typeof error.code === 'number') resolve(null);
+      else reject(error);
+    });
+  });
+}
+
+test('a real dangling link to a missing outside folder is refused, even after that folder appears', async () => {
+  const base = await mkdtemp(path.join(tmpdir(), 'vsc-dangling-'));
+  try {
+    const thread = path.join(base, 'thread');
+    const outside = path.join(base, 'outside', 'missing');
+    await mkdir(thread);
+    await mkdir(path.join(base, 'outside'));
+    await symlink(outside, path.join(thread, 'link'));
+    await assert.rejects(resolveOpenPath(thread, 'link/new.txt', realpathProgram), /cannot be opened/);
+    await mkdir(outside);
+    await writeFile(path.join(outside, 'new.txt'), 'outside');
+    await assert.rejects(resolveOpenPath(thread, 'link/new.txt', realpathProgram), /is outside this thread's folder/);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('a real existing file inside the thread folder opens', async () => {
+  const base = await mkdtemp(path.join(tmpdir(), 'vsc-inside-'));
+  try {
+    const thread = path.join(base, 'thread');
+    await mkdir(path.join(thread, 'src'), { recursive: true });
+    await writeFile(path.join(thread, 'src', 'a.ts'), 'export {};\n');
+    assert.equal(await resolveOpenPath(thread, 'src/a.ts', realpathProgram), path.join(thread, 'src', 'a.ts'));
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
 });
 
 test('a thread folder that cannot be read refuses every path', async () => {
