@@ -12,22 +12,17 @@ import { environment, get, project } from 'kagan/threads';
 import {
   HOLD_MS,
   ONLY_MACOS,
-  POLL_MS,
   STARTING,
-  STARTUP_TIMEOUT_TEXT,
   connectionToken,
   isNotGranted,
-  startExpired,
   editorPageUrl,
   failureDetail,
   panelText,
   laterText,
-  notFoundDetail,
   openPosition,
   openedWhere,
   openingText,
   pageOnThisSystem,
-  portBusy,
   portOrder,
   resolveOpenPath,
   scrub,
@@ -38,6 +33,9 @@ import {
   createPending,
   PENDING_MS,
   requestForScreen,
+  START_DEADLINE_MS,
+  bringUp,
+  StartFailure,
 } from './editor.js';
 
 const NO_THREAD = 'Open a thread first. There is no workspace to open.';
@@ -59,20 +57,11 @@ let running = null;
 /** @type {Promise<Server> | null} */
 let starting = null;
 
-/** Servers that did not answer in time. They are still running, and a later start adopts one that answers. */
-/** @type {Server[]} */
-let abandoned = [];
+/** A start that timed out. Its process still runs, and the next start waits on it. @type {Server | null} */
+let stuck = null;
 
-/** A start that failed. `kind` picks the panel copy; `detail` is for the log only. */
-class StartFailure extends Error {
-  /** @param {string} kind @param {string} detail */
-  constructor(kind, detail) {
-    super(kind);
-    this.name = 'StartFailure';
-    this.kind = kind;
-    this.detail = detail;
-  }
-}
+/** How each started process ended, once it has. @type {Map<Server, { result?: { exitCode: number | null, stdout: string, stderr: string }, error?: unknown }>} */
+const ended = new Map();
 
 /** Every token this process has made, so the log can hide them. */
 /** @type {string[]} */
@@ -239,13 +228,6 @@ export class OpenPanel extends View {
   }
 }
 
-class PortInUse extends Error {
-  constructor() {
-    super('That port is already in use.');
-    this.name = 'PortInUse';
-  }
-}
-
 function ensureServer() {
   if (running) return Promise.resolve(running);
   if (starting) return starting;
@@ -270,84 +252,47 @@ function ensureServer() {
  * @returns {Promise<Server>}
  */
 async function boot(cx) {
-  for (const old of abandoned) {
-    if (await answering(old.port)) {
-      abandoned = abandoned.filter((server) => server !== old);
-      localStorage.setItem('port', String(old.port));
-      watch(old);
-      return old;
-    }
-  }
   const dirs = await serverDirs();
-  const token = connectionToken(new Uint8Array(randomBytes(24)));
-  tokens.push(token);
   const saved = Number(localStorage.getItem('port'));
-  let last = new StartFailure('start', 'no port answered');
-  for (const port of portOrder(Number.isInteger(saved) ? saved : null)) {
-    if (await answering(port)) {
-      last = new StartFailure('port', 'another listener already answers on the port');
-      continue;
-    }
-    const promise = run('codium', serveWebArgs({ port, token, dataDir: dirs.dataDir, cliDir: dirs.cliDir }), { timeoutMs: HOLD_MS });
-    /** @type {Server} */
-    const attempt = { port, token, promise };
-    try {
-      await waitReady(cx, attempt);
-      localStorage.setItem('port', String(port));
-      watch(attempt);
-      return attempt;
-    } catch (error) {
-      if (error instanceof PortInUse) {
-        last = new StartFailure('port', rawMessage(error));
-        continue;
-      }
-      if (error instanceof StartFailure && error.kind === 'timeout') abandon(attempt);
-      throw error;
-    }
+  const outcome = await bringUp({
+    stuck,
+    ports: portOrder(Number.isInteger(saved) ? saved : null),
+    launch: (port) => launch(port, dirs),
+    clock: {
+      now: () => Date.now(),
+      sleep: (ms) => sleep(cx, ms),
+      listening: (port) => answering(port),
+      ended: (attempt) => ended.get(attempt) ?? null,
+    },
+    deadlineMs: START_DEADLINE_MS,
+  });
+  if ('stuck' in outcome) {
+    stuck = outcome.stuck;
+    throw new StartFailure('timeout', 'no answer from the server before the deadline');
   }
-  throw last;
+  stuck = null;
+  localStorage.setItem('port', String(outcome.server.port));
+  watch(outcome.server);
+  return outcome.server;
 }
 
 /**
- * The listener is ours only when it was down before this process, and this process is still up.
- * `/version` does not ask for the connection token.
- * @param {import('gpui-kit').AsyncContext} cx
- * @param {Server} attempt
+ * Starts one `codium serve-web` on this port, with a new token.
+ * @param {number} port
+ * @param {{ dataDir: string, cliDir: string }} dirs
+ * @returns {Server}
  */
-async function waitReady(cx, attempt) {
-  /** @type {{ result?: { exitCode: number | null, stdout: string, stderr: string }, error?: unknown } | null} */
-  let settled = null;
-  attempt.promise.then(
-    (result) => {
-      settled = { result };
-    },
-    (error) => {
-      settled = { error };
-    },
+function launch(port, dirs) {
+  const token = connectionToken(new Uint8Array(randomBytes(24)));
+  tokens.push(token);
+  const promise = run('codium', serveWebArgs({ port, token, dataDir: dirs.dataDir, cliDir: dirs.cliDir }), { timeoutMs: HOLD_MS });
+  /** @type {Server} */
+  const attempt = { port, token, promise };
+  promise.then(
+    (result) => ended.set(attempt, { result }),
+    (error) => ended.set(attempt, { error }),
   );
-  const startedAt = Date.now();
-  for (;;) {
-    if (settled?.error) throw startFailure(settled.error, attempt.token);
-    if (settled?.result) {
-      const output = `${settled.result.stdout}\n${settled.result.stderr}`;
-      if (portBusy(output)) throw new PortInUse();
-      throw new StartFailure('start', failureDetail(output, settled.result.exitCode, attempt.token));
-    }
-    if (await answering(attempt.port)) return;
-    if (startExpired(startedAt, Date.now())) {
-      throw new StartFailure('timeout', 'no answer from the server before the deadline');
-    }
-    await sleep(cx, POLL_MS);
-  }
-}
-
-/** @param {Server} attempt */
-function abandon(attempt) {
-  abandoned = [...abandoned, attempt];
-  const drop = () => {
-    abandoned = abandoned.filter((server) => server !== attempt);
-  };
-  attempt.promise.then(drop, drop);
+  return attempt;
 }
 
 /** @param {Server} attempt */
@@ -400,17 +345,6 @@ async function serverDirs() {
   await mkdir(folders.dataDir, { recursive: true });
   await mkdir(folders.cliDir, { recursive: true });
   return folders;
-}
-
-/**
- * @param {unknown} error
- * @param {string} token
- * @returns {StartFailure}
- */
-function startFailure(error, token) {
-  const raw = scrub(rawMessage(error), token);
-  if (/not found/i.test(raw)) return new StartFailure('missing', notFoundDetail(error));
-  return new StartFailure('start', raw);
 }
 
 /** @param {unknown} error */

@@ -39,6 +39,94 @@ export function startExpired(startedAt, now, limitMs = START_DEADLINE_MS) {
   return now - startedAt >= limitMs;
 }
 
+/** A failed start. `kind` picks the panel copy; `detail` is for the log only. */
+export class StartFailure extends Error {
+  /** @param {string} kind @param {string} detail */
+  constructor(kind, detail) {
+    super(kind);
+    this.name = 'StartFailure';
+    this.kind = kind;
+    this.detail = detail;
+  }
+}
+
+/**
+ * @typedef {{ port: number, token: string, promise: Promise<unknown> }} StartAttempt
+ * @typedef {{ result: { exitCode: number | null, stdout: string, stderr: string } } | { error: unknown }} Ended
+ * @typedef {{
+ *   now: () => number,
+ *   sleep: (ms: number) => Promise<void>,
+ *   listening: (port: number) => Promise<boolean>,
+ *   ended: (attempt: StartAttempt) => Ended | null,
+ * }} StartClock
+ */
+
+/**
+ * Waits for one started process to answer, to end, or to run out of time.
+ * @param {StartAttempt} attempt
+ * @param {StartClock} clock
+ * @param {number} deadlineMs
+ * @returns {Promise<{ outcome: 'ready' } | { outcome: 'timeout' } | { outcome: 'ended', ended: Ended }>}
+ */
+export async function awaitStart(attempt, clock, deadlineMs) {
+  const startedAt = clock.now();
+  for (;;) {
+    const ended = clock.ended(attempt);
+    if (ended) return { outcome: 'ended', ended };
+    if (await clock.listening(attempt.port)) return { outcome: 'ready' };
+    if (startExpired(startedAt, clock.now(), deadlineMs)) return { outcome: 'timeout' };
+    await clock.sleep(POLL_MS);
+  }
+}
+
+/**
+ * What the panel says, and what the log keeps, for a process that ended before it answered.
+ * @param {StartAttempt} attempt
+ * @param {Ended} ended
+ * @returns {StartFailure}
+ */
+export function endedFailure(attempt, ended) {
+  if ('error' in ended) {
+    const raw = ended.error instanceof Error ? ended.error.message : String(ended.error);
+    if (/not found/i.test(raw)) return new StartFailure('missing', notFoundDetail(ended.error));
+    return new StartFailure('start', raw);
+  }
+  const output = `${ended.result.stdout}\n${ended.result.stderr}`;
+  if (portBusy(output)) return new StartFailure('port', 'another listener answers on the port');
+  return new StartFailure('start', failureDetail(output, ended.result.exitCode, attempt.token));
+}
+
+/**
+ * Brings up exactly one server. A start that timed out is kept, and the next start waits on that same process.
+ * A new process is launched only after the kept one has ended, so two servers are never alive together.
+ * @param {{ stuck: StartAttempt | null, ports: number[], launch: (port: number) => StartAttempt, clock: StartClock, deadlineMs: number }} env
+ * @returns {Promise<{ server: StartAttempt } | { stuck: StartAttempt }>} `server` answers; `stuck` timed out and still runs
+ */
+export async function bringUp(env) {
+  const { clock, deadlineMs } = env;
+  if (env.stuck) {
+    const kept = await awaitStart(env.stuck, clock, deadlineMs);
+    if (kept.outcome === 'ready') return { server: env.stuck };
+    if (kept.outcome === 'timeout') return { stuck: env.stuck };
+  }
+  /** @type {StartFailure} */
+  let last = new StartFailure('start', 'no port answered');
+  for (const port of env.ports) {
+    if (await clock.listening(port)) {
+      last = new StartFailure('port', 'another listener answers on the port');
+      continue;
+    }
+    const attempt = env.launch(port);
+    const ran = await awaitStart(attempt, clock, deadlineMs);
+    if (ran.outcome === 'ready') return { server: attempt };
+    if (ran.outcome === 'timeout') return { stuck: attempt };
+    const failure = endedFailure(attempt, ran.ended);
+    if (failure.kind !== 'port') throw failure;
+    last = failure;
+  }
+  throw last;
+}
+
 /**
  * Check this on the raw error. A message that has already been made plain no longer says "not granted".
  * @param {unknown} error

@@ -6,6 +6,8 @@ import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import {
   FIRST_PORT,
+  bringUp,
+  endedFailure,
   PENDING_MS,
   PORT_SPAN,
   beginToolLaunch,
@@ -123,6 +125,75 @@ test('a missing permission is recognised from the raw message, before anything m
   assert.equal(isNotGranted(new Error('fetch to http://127.0.0.1:47321/version is not granted')), true);
   assert.equal(isNotGranted(new Error('connection refused')), false);
   assert.equal(isNotGranted('not granted'), true);
+});
+
+function controlledStarts(answering = new Set()) {
+  let now = 0;
+  const ended = new Map();
+  const launched = [];
+  let mostAlive = 0;
+  const clock = {
+    now: () => now,
+    sleep: async (ms) => {
+      now += ms;
+    },
+    listening: async (port) => answering.has(port),
+    ended: (attempt) => ended.get(attempt) ?? null,
+  };
+  const env = (stuck) => ({
+    stuck,
+    ports: [FIRST_PORT, FIRST_PORT + 1],
+    launch: (port) => {
+      const attempt = { port, token: 'a'.repeat(32), promise: null };
+      launched.push(attempt);
+      mostAlive = Math.max(mostAlive, launched.filter((item) => !ended.has(item)).length);
+      return attempt;
+    },
+    clock,
+    deadlineMs: START_DEADLINE_MS,
+  });
+  return { answering, ended, launched, env, mostAlive: () => mostAlive };
+}
+
+test('a timed-out start is kept: later tries wait on that process, and no second server is alive with it', async () => {
+  const world = controlledStarts();
+  const first = await bringUp(world.env(null));
+  assert.ok('stuck' in first, 'the first start times out and is kept');
+  assert.equal(world.launched.length, 1);
+
+  const second = await bringUp(world.env(first.stuck));
+  assert.ok('stuck' in second);
+  assert.equal(second.stuck, first.stuck);
+  assert.equal(world.launched.length, 1, 'no new process while the kept one is alive');
+
+  world.answering.add(FIRST_PORT);
+  const third = await bringUp(world.env(second.stuck));
+  assert.ok('server' in third);
+  assert.equal(third.server, first.stuck);
+  assert.equal(world.launched.length, 1);
+  assert.equal(world.mostAlive(), 1);
+});
+
+test('when the kept process has ended, a new start is allowed, and still only one server is alive', async () => {
+  const world = controlledStarts();
+  const first = await bringUp(world.env(null));
+  assert.ok('stuck' in first);
+  world.ended.set(first.stuck, { result: { exitCode: 1, stdout: '', stderr: 'boom' } });
+
+  const again = await bringUp(world.env(first.stuck));
+  assert.ok('stuck' in again);
+  assert.notEqual(again.stuck, first.stuck);
+  assert.equal(world.launched.length, 2);
+  assert.equal(world.mostAlive(), 1, 'the ended process no longer counts as alive');
+});
+
+test('an ended start says which plain kind it was, and keeps the reason for the log', () => {
+  const attempt = { port: FIRST_PORT, token: 'b'.repeat(32), promise: null };
+  assert.equal(endedFailure(attempt, { error: new Error('spawn codium ENOENT: not found') }).kind, 'missing');
+  assert.equal(endedFailure(attempt, { result: { exitCode: 1, stdout: '', stderr: 'EADDRINUSE 47321' } }).kind, 'port');
+  const failed = endedFailure(attempt, { result: { exitCode: 2, stdout: '', stderr: `token ${'b'.repeat(32)} bad` } });
+  assert.equal(failed.kind, 'start');
+  assert.equal(failed.detail.includes('b'.repeat(32)), false);
 });
 
 test('a file name with # ? % or : stays part of the file name', () => {
