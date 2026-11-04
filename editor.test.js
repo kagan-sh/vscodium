@@ -1,76 +1,261 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import {
-  FILE_FIELD_LABEL,
+  FIRST_PORT,
+  bringUp,
+  endedFailure,
   PENDING_MS,
-  codiumArgs,
-  codiumWorkspaceArgs,
+  PORT_SPAN,
   beginToolLaunch,
+  connectionToken,
   createPending,
+  editorPageUrl,
   endToolLaunch,
-  fileFieldPath,
-  movePanel,
+  failureDetail,
   insideFolder,
   laterText,
-  notFoundText,
+  movePanel,
+  notFoundDetail,
+  panelText,
+  openPosition,
+  openedWhere,
+  openingText,
+  pageOnThisSystem,
+  portBusy,
+  portOrder,
+  STARTUP_TIMEOUT_TEXT,
+  START_DEADLINE_MS,
+  isNotGranted,
+  requestForScreen,
   resolveOpenPath,
-  worktreePaths,
+  startExpired,
+  serverFolders,
+  scrub,
+  serveWebArgs,
+  versionReady,
+  versionUrl,
 } from './editor.js';
 
-test('path only opens the file in the last window', () => {
-  assert.deepEqual(codiumArgs({ path: '/Users/me/app.js' }), [
-    '--reuse-window',
-    '--goto',
-    '/Users/me/app.js',
+const token = 'ab'.repeat(16);
+
+test('serve-web listens on this machine with a connection token', () => {
+  assert.deepEqual(serveWebArgs({ port: 47321, token, dataDir: '/tmp/editor-data', cliDir: '/tmp/editor-cli' }), [
+    'serve-web',
+    '--host', '127.0.0.1',
+    '--port', '47321',
+    '--connection-token', token,
+    '--accept-server-license-terms',
+    '--disable-telemetry',
+    '--log', 'off',
+    '--server-data-dir', '/tmp/editor-data',
+    '--cli-data-dir', '/tmp/editor-cli',
   ]);
 });
 
-test('a line number is added after the path', () => {
-  assert.deepEqual(codiumArgs({ path: '/Users/me/app.js', line: 42 }), [
-    '--reuse-window',
-    '--goto',
-    '/Users/me/app.js:42',
+test('a bad port or token is refused', () => {
+  assert.throws(() => serveWebArgs({ port: 0, token }), /port/);
+  assert.throws(() => serveWebArgs({ port: 47321, token: 'short' }), /token/);
+  assert.throws(() => serveWebArgs({ port: 47321, token, dataDir: 'relative' }), /absolute path/);
+});
+
+test('the connection token is hex from the random bytes', () => {
+  const bytes = new Uint8Array(16);
+  bytes[0] = 0x0a;
+  bytes[15] = 0xff;
+  assert.equal(connectionToken(bytes), '0a0000000000000000000000000000ff');
+  assert.throws(() => connectionToken(new Uint8Array(8)), /16 random bytes/);
+});
+
+test('server files stay in the plugin data folder', () => {
+  assert.deepEqual(serverFolders('/data/plugins/vscodium/data/'), {
+    dataDir: '/data/plugins/vscodium/data/server',
+    cliDir: '/data/plugins/vscodium/data/cli',
+  });
+  assert.throws(() => serverFolders(undefined), /data folder is missing/);
+});
+
+test('the saved port is tried first when it is granted, then the rest once each', () => {
+  assert.deepEqual(portOrder(FIRST_PORT + 2), [FIRST_PORT + 2, FIRST_PORT, FIRST_PORT + 1]);
+  assert.equal(portOrder(FIRST_PORT).length, PORT_SPAN);
+  assert.deepEqual(portOrder('nope'), [FIRST_PORT, FIRST_PORT + 1, FIRST_PORT + 2]);
+  assert.deepEqual(portOrder(FIRST_PORT + 99), [FIRST_PORT, FIRST_PORT + 1, FIRST_PORT + 2]);
+});
+
+test('the page address stays on this machine and names the folder', () => {
+  const url = new URL(editorPageUrl({ port: 47321, token, folder: '/work/app' }));
+  assert.equal(url.hostname, '127.0.0.1');
+  assert.equal(url.port, '47321');
+  assert.equal(url.searchParams.get('tkn'), token);
+  assert.equal(url.searchParams.get('folder'), '/work/app');
+  assert.equal(url.searchParams.get('payload'), null);
+  assert.equal(versionUrl(47321), 'http://127.0.0.1:47321/version');
+  assert.equal(versionReady(200), true);
+  assert.equal(versionReady(403), false);
+});
+
+test('a file open asks the page to jump to the line and column', () => {
+  const url = new URL(editorPageUrl({
+    port: 47321,
+    token,
+    folder: '/work/app',
+    file: '/work/app/src/a.js',
+    line: 42,
+    column: 7,
+  }));
+  const payload = JSON.parse(url.searchParams.get('payload') ?? '');
+  assert.deepEqual(payload, [
+    ['openFile', 'vscode-remote://127.0.0.1:47321/work/app/src/a.js:42:7'],
+    ['gotoLineMode', 'true'],
   ]);
 });
 
-test('a null line is the same as no line', () => {
-  assert.deepEqual(codiumArgs({ path: '/a.js', line: null }), ['--reuse-window', '--goto', '/a.js']);
+test('a server that has not answered by the deadline is given up on, with a plain message', () => {
+  assert.ok(START_DEADLINE_MS >= 2 * 60 * 1000 && START_DEADLINE_MS <= 10 * 60 * 1000);
+  assert.equal(startExpired(1000, 1000 + START_DEADLINE_MS - 1), false);
+  assert.equal(startExpired(1000, 1000 + START_DEADLINE_MS), true);
+  assert.match(STARTUP_TIMEOUT_TEXT, /Try again/);
+  assert.doesNotMatch(STARTUP_TIMEOUT_TEXT, /\bport\b|exit|stderr|stdout/);
 });
 
-test('relative and missing paths are refused', () => {
-  assert.throws(() => codiumArgs({ path: 'src/app.js' }), /absolute path/);
-  assert.throws(() => codiumArgs({}), /absolute path/);
-  assert.throws(() => codiumArgs({ path: 42 }), /absolute path/);
+test('a missing permission is recognised from the raw message, before anything makes it plain', () => {
+  assert.equal(isNotGranted(new Error('fetch to http://127.0.0.1:47321/version is not granted')), true);
+  assert.equal(isNotGranted(new Error('connection refused')), false);
+  assert.equal(isNotGranted('not granted'), true);
 });
 
-test('a path with a line break or NUL is refused', () => {
-  assert.throws(() => codiumArgs({ path: '/a\nb.js' }), /line break/);
-  assert.throws(() => codiumArgs({ path: '/a\0b.js' }), /line break/);
+function controlledStarts(answering = new Set()) {
+  let now = 0;
+  const ended = new Map();
+  const launched = [];
+  let mostAlive = 0;
+  const clock = {
+    now: () => now,
+    sleep: async (ms) => {
+      now += ms;
+    },
+    listening: async (port) => answering.has(port),
+    ended: (attempt) => ended.get(attempt) ?? null,
+  };
+  const env = (stuck) => ({
+    stuck,
+    ports: [FIRST_PORT, FIRST_PORT + 1],
+    launch: (port) => {
+      const attempt = { port, token: 'a'.repeat(32), promise: null };
+      launched.push(attempt);
+      mostAlive = Math.max(mostAlive, launched.filter((item) => !ended.has(item)).length);
+      return attempt;
+    },
+    clock,
+    deadlineMs: START_DEADLINE_MS,
+  });
+  return { answering, ended, launched, env, mostAlive: () => mostAlive };
+}
+
+test('a timed-out start is kept: later tries wait on that process, and no second server is alive with it', async () => {
+  const world = controlledStarts();
+  const first = await bringUp(world.env(null));
+  assert.ok('stuck' in first, 'the first start times out and is kept');
+  assert.equal(world.launched.length, 1);
+
+  const second = await bringUp(world.env(first.stuck));
+  assert.ok('stuck' in second);
+  assert.equal(second.stuck, first.stuck);
+  assert.equal(world.launched.length, 1, 'no new process while the kept one is alive');
+
+  world.answering.add(FIRST_PORT);
+  const third = await bringUp(world.env(second.stuck));
+  assert.ok('server' in third);
+  assert.equal(third.server, first.stuck);
+  assert.equal(world.launched.length, 1);
+  assert.equal(world.mostAlive(), 1);
 });
 
-test('a bad line number is refused', () => {
-  for (const line of [0, -3, 1.5, '3', NaN]) {
-    assert.throws(() => codiumArgs({ path: '/a.js', line }), /whole number/, `line ${String(line)}`);
+test('when the kept process has ended, a new start is allowed, and still only one server is alive', async () => {
+  const world = controlledStarts();
+  const first = await bringUp(world.env(null));
+  assert.ok('stuck' in first);
+  world.ended.set(first.stuck, { result: { exitCode: 1, stdout: '', stderr: 'boom' } });
+
+  const again = await bringUp(world.env(first.stuck));
+  assert.ok('stuck' in again);
+  assert.notEqual(again.stuck, first.stuck);
+  assert.equal(world.launched.length, 2);
+  assert.equal(world.mostAlive(), 1, 'the ended process no longer counts as alive');
+});
+
+test('an ended start says which plain kind it was, and keeps the reason for the log', () => {
+  const attempt = { port: FIRST_PORT, token: 'b'.repeat(32), promise: null };
+  assert.equal(endedFailure(attempt, { error: new Error('spawn codium ENOENT: not found') }).kind, 'missing');
+  assert.equal(endedFailure(attempt, { result: { exitCode: 1, stdout: '', stderr: 'EADDRINUSE 47321' } }).kind, 'port');
+  const failed = endedFailure(attempt, { result: { exitCode: 2, stdout: '', stderr: `token ${'b'.repeat(32)} bad` } });
+  assert.equal(failed.kind, 'start');
+  assert.equal(failed.detail.includes('b'.repeat(32)), false);
+});
+
+test('a file name with # ? % or : stays part of the file name', () => {
+  const file = '/work/app/notes #1?/50%: draft.md';
+  const url = new URL(editorPageUrl({ port: 47321, token, folder: '/work/app', file, line: 3 }));
+  const [[, address]] = JSON.parse(url.searchParams.get('payload') ?? '');
+  assert.equal(address, 'vscode-remote://127.0.0.1:47321/work/app/notes%20%231%3F/50%25%3A%20draft.md:3');
+  assert.equal(new URL(address).hash, '');
+  assert.equal(new URL(address).search, '');
+});
+
+test('a line and a column have to be whole numbers, and a column needs a line', () => {
+  assert.deepEqual(openPosition(null, null), {});
+  assert.deepEqual(openPosition(4, undefined), { line: 4 });
+  assert.throws(() => openPosition(0, undefined), /line/);
+  assert.throws(() => openPosition(undefined, 2), /column needs a line/);
+  assert.equal(openedWhere('/a.js', 4, 2), '/a.js:4:2');
+  assert.equal(openingText('/a.js:4', true), 'Opened /a.js:4.');
+  assert.match(openingText('/a.js:4', false), /first start/);
+});
+
+test('a busy port is not a missing editor', () => {
+  assert.equal(portBusy('could not start server on the given host/port: Address already in use (os error 48)'), true);
+  assert.equal(portBusy('Error: listen EADDRINUSE: address already in use 127.0.0.1:47321'), true);
+  assert.equal(portBusy('Web UI available at http://127.0.0.1:47321'), false);
+});
+
+test('the panel shows plain recovery text for every failure, never raw output', () => {
+  for (const kind of ['start', 'missing', 'denied', 'port', 'timeout', 'stopped', 'folder']) {
+    const text = panelText(kind);
+    assert.match(text, /Try again/, kind);
+    assert.doesNotMatch(text, /exit code|stderr|stdout|ENOENT|EADDRINUSE|Error|tkn|\/Users|\/private|\/tmp/, kind);
   }
+  assert.match(panelText('missing'), /Shell Command/);
 });
 
-test('a missing codium command says how to install it', () => {
-  const text = notFoundText(new Error('spawn codium ENOENT'));
-  assert.match(text, /Could not start codium/);
-  assert.match(text, /Shell Command/);
+test('raw process output and the connection token go to the log, with the token removed', () => {
+  const detail = failureDetail(`refused token ${token} at /private/tmp/x\nstderr: boom`, 1, token);
+  assert.match(detail, /exit code 1/);
+  assert.match(detail, /stderr: boom/);
+  assert.equal(detail.includes(token), false);
+  assert.equal(scrub(`see ${token}`, token).includes(token), false);
+  assert.doesNotMatch(panelText('start'), /boom|stderr|refused/);
+});
+
+test('the page is drawn on macOS only', () => {
+  assert.equal(pageOnThisSystem('darwin'), true);
+  assert.equal(pageOnThisSystem('macos'), true);
+  assert.equal(pageOnThisSystem('linux'), false);
+  assert.equal(pageOnThisSystem('win32'), false);
+});
+
+test('a missing codium command keeps its reason in the log', () => {
+  assert.match(notFoundDetail(new Error('spawn codium ENOENT')), /Could not start codium: spawn codium ENOENT/);
 });
 
 const workspace = '/bb/worktrees/thr_a/frontend';
 const environment = '/bb/worktrees/thr_a/frontend';
 const sibling = '/bb/worktrees/thr_a/frontend-257';
 
-test('a workspace open reuses the window on that folder', () => {
-  assert.deepEqual(codiumWorkspaceArgs(workspace), ['--reuse-window', workspace]);
-});
-
-test('a missing workspace is refused', () => {
-  assert.throws(() => codiumWorkspaceArgs(''), /no workspace folder/);
+test('a page with no workspace is refused', () => {
+  assert.throws(() => editorPageUrl({ port: 47321, token, folder: '' }), /no workspace folder/);
 });
 
 test('insideFolder matches Node for ordinary paths', () => {
@@ -93,67 +278,104 @@ test('insideFolder matches Node for ordinary paths', () => {
   }
 });
 
-test('a relative path opens inside the thread workspace', () => {
-  assert.equal(resolveOpenPath(workspace, environment, [sibling], 'src/a.ts'), `${workspace}/src/a.ts`);
+const disk = (entries) => async (file) => (file in entries ? entries[file] : null);
+const tree = disk({
+  [workspace]: workspace,
+  [`${workspace}/src`]: `${workspace}/src`,
+  [`${workspace}/src/a.ts`]: `${workspace}/src/a.ts`,
+  [`${workspace}/link`]: '/etc',
+  [`${workspace}/link/passwd`]: '/etc/passwd',
+  [`${workspace}/out`]: sibling,
+  [`${workspace}/out/x.ts`]: `${sibling}/x.ts`,
+  [sibling]: sibling,
+  [`${sibling}/src/x.ts`]: `${sibling}/src/x.ts`,
 });
 
-test('a relative path cannot climb out, even into a sibling worktree', () => {
-  assert.throws(
-    () => resolveOpenPath(workspace, environment, [sibling], '../frontend-257/src/a.ts'),
-    /leaves the thread workspace/,
-  );
+test('a relative path opens inside the thread folder', async () => {
+  assert.equal(await resolveOpenPath(workspace, 'src/a.ts', tree), `${workspace}/src/a.ts`);
 });
 
-test('an absolute path opens inside the workspace, the environment, or a sibling worktree', () => {
-  assert.equal(
-    resolveOpenPath(workspace, environment, [sibling], `${workspace}/src/a.ts`),
-    `${workspace}/src/a.ts`,
-  );
-  assert.equal(
-    resolveOpenPath(workspace, '/bb/env/checkout', [], '/bb/env/checkout/notes.txt'),
-    '/bb/env/checkout/notes.txt',
-  );
-  assert.equal(
-    resolveOpenPath(workspace, environment, [sibling], `${sibling}/src/x.ts`),
-    `${sibling}/src/x.ts`,
-  );
+test('a file that does not exist is refused, because nothing can be checked behind it', async () => {
+  await assert.rejects(resolveOpenPath(workspace, 'src/new.ts', tree), /cannot be opened/);
 });
 
-test('an absolute path outside those roots is refused, and the sentence says why', () => {
-  assert.throws(
-    () => resolveOpenPath(workspace, environment, [sibling], '/etc/passwd'),
-    /outside the thread workspace, its environment, and this repo's other git worktrees/,
-  );
-  assert.throws(
-    () => resolveOpenPath(workspace, environment, [sibling], `${workspace}-other/x.ts`),
-    /outside the thread workspace/,
-  );
-  assert.throws(
-    () => resolveOpenPath(workspace, environment, [sibling], `${sibling}/../../../../etc/passwd`),
-    /outside the thread workspace/,
-  );
+test('a relative path cannot climb out, even into a sibling worktree', async () => {
+  await assert.rejects(resolveOpenPath(workspace, '../frontend-257/src/a.ts', tree), /leaves this thread's folder/);
 });
 
-test('when git cannot list worktrees, the refusal says so', () => {
-  assert.throws(
-    () => resolveOpenPath(workspace, null, [], '/etc/passwd', 'git failed'),
-    /Git could not list this repo's other worktrees: git failed/,
-  );
+test('a sibling worktree is outside the thread folder', async () => {
+  await assert.rejects(resolveOpenPath(workspace, `${sibling}/src/x.ts`, tree), /is outside this thread's folder/);
 });
 
-test('an empty path is refused and is not the file-field label', () => {
-  assert.throws(() => resolveOpenPath(workspace, environment, [], ''), /The path is empty/);
-  assert.throws(() => resolveOpenPath(workspace, environment, [], '   '), /The path is empty/);
-  assert.deepEqual(fileFieldPath(''), { empty: true });
-  assert.deepEqual(fileFieldPath('   '), { empty: true });
-  assert.deepEqual(fileFieldPath(FILE_FIELD_LABEL), { empty: true });
-  assert.deepEqual(fileFieldPath(`${workspace}/a.js:42`), { empty: false, path: `${workspace}/a.js`, line: 42 });
-  assert.deepEqual(fileFieldPath(`${workspace}/a.js:42:7`), { empty: false, path: `${workspace}/a.js`, line: 42 });
+test('a symbolic link inside the folder that points outside is refused', async () => {
+  await assert.rejects(resolveOpenPath(workspace, 'link/passwd', tree), /is outside this thread's folder/);
 });
 
-test('git worktree porcelain lists every worktree folder', () => {
-  const porcelain = [`worktree ${workspace}`, 'HEAD abc', 'branch refs/heads/main', '', `worktree ${sibling}`, 'HEAD def', ''].join('\n');
-  assert.deepEqual(worktreePaths(porcelain), [workspace, sibling]);
+test('a folder in the thread that links to a sibling worktree is refused', async () => {
+  await assert.rejects(resolveOpenPath(workspace, 'out/x.ts', tree), /is outside this thread's folder/);
+});
+
+test('the check uses real locations, so a folder reached through a link still works', async () => {
+  const linked = disk({ '/link/app': '/real/app', '/link/app/a.ts': '/real/app/a.ts' });
+  assert.equal(await resolveOpenPath('/link/app', 'a.ts', linked), '/link/app/a.ts');
+});
+
+test('an absolute path inside the thread folder opens', async () => {
+  assert.equal(await resolveOpenPath(workspace, `${workspace}/src/a.ts`, tree), `${workspace}/src/a.ts`);
+});
+
+test('an absolute path outside the thread folder is refused', async () => {
+  await assert.rejects(resolveOpenPath(workspace, '/etc/passwd', tree), /is outside this thread's folder/);
+  await assert.rejects(resolveOpenPath(workspace, `${workspace}-other/x.ts`, tree), /is outside this thread's folder/);
+  await assert.rejects(resolveOpenPath(workspace, `${sibling}/../../../../etc/passwd`, tree), /is outside this thread's folder/);
+});
+
+function realpathProgram(target) {
+  return new Promise((resolve, reject) => {
+    execFile('realpath', [target], (error, stdout) => {
+      if (!error) resolve(stdout.trim());
+      else if (typeof error.code === 'number') resolve(null);
+      else reject(error);
+    });
+  });
+}
+
+test('a real dangling link to a missing outside folder is refused, even after that folder appears', async () => {
+  const base = await mkdtemp(path.join(tmpdir(), 'vsc-dangling-'));
+  try {
+    const thread = path.join(base, 'thread');
+    const outside = path.join(base, 'outside', 'missing');
+    await mkdir(thread);
+    await mkdir(path.join(base, 'outside'));
+    await symlink(outside, path.join(thread, 'link'));
+    await assert.rejects(resolveOpenPath(thread, 'link/new.txt', realpathProgram), /cannot be opened/);
+    await mkdir(outside);
+    await writeFile(path.join(outside, 'new.txt'), 'outside');
+    await assert.rejects(resolveOpenPath(thread, 'link/new.txt', realpathProgram), /is outside this thread's folder/);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('a real existing file inside the thread folder opens', async () => {
+  const base = await mkdtemp(path.join(tmpdir(), 'vsc-inside-'));
+  try {
+    const thread = path.join(base, 'thread');
+    await mkdir(path.join(thread, 'src'), { recursive: true });
+    await writeFile(path.join(thread, 'src', 'a.ts'), 'export {};\n');
+    assert.equal(await resolveOpenPath(thread, 'src/a.ts', realpathProgram), path.join(thread, 'src', 'a.ts'));
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
+});
+
+test('a thread folder that cannot be read refuses every path', async () => {
+  await assert.rejects(resolveOpenPath('/gone', 'a.ts', disk({})), /cannot be read/);
+});
+
+test('an empty path is refused', async () => {
+  await assert.rejects(resolveOpenPath(workspace, '', tree), /The path is empty/);
+  await assert.rejects(resolveOpenPath(workspace, '   ', tree), /The path is empty/);
 });
 
 test('an off-screen open says it waits for the panel', () => {
@@ -179,6 +401,17 @@ test('only the latest request per thread is kept, and old ones are dropped', () 
   queue.put('thr_2', 'open d.ts');
   assert.equal(queue.size(), 1);
   assert.equal(queue.take('thr_1'), null);
+});
+
+test('a file request opens only on the thread that made it, and waits while another thread is on screen', () => {
+  const queue = createPending(PENDING_MS);
+  queue.put('thr_a', { path: '/w/a/src/a.ts', line: 3 });
+  assert.equal(requestForScreen(queue, 'thr_b'), null);
+  assert.equal(queue.size(), 1);
+  assert.equal(requestForScreen(queue, null), null);
+  assert.equal(queue.size(), 1);
+  assert.deepEqual(requestForScreen(queue, 'thr_a'), { path: '/w/a/src/a.ts', line: 3 });
+  assert.equal(queue.size(), 0);
 });
 
 test('a launch starts on thread A, the panel moves to B, the launch ends, the panel is not busy, and B\'s saved request opens', () => {
