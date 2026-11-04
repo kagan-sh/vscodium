@@ -10,11 +10,12 @@ import {
   createPending,
   editorPageUrl,
   endToolLaunch,
-  failureText,
+  failureDetail,
   insideFolder,
   laterText,
   movePanel,
-  notFoundText,
+  notFoundDetail,
+  panelText,
   openPosition,
   openedWhere,
   openingText,
@@ -146,11 +147,22 @@ test('a busy port is not a missing editor', () => {
   assert.equal(portBusy('Web UI available at http://127.0.0.1:47321'), false);
 });
 
-test('a failure hides the connection token', () => {
-  const text = failureText(`refused token ${token}`, 1, token);
-  assert.match(text, /did not start/);
-  assert.equal(text.includes(token), false);
+test('the panel shows plain recovery text for every failure, never raw output', () => {
+  for (const kind of ['start', 'missing', 'denied', 'port', 'timeout', 'stopped', 'folder']) {
+    const text = panelText(kind);
+    assert.match(text, /Try again/, kind);
+    assert.doesNotMatch(text, /exit code|stderr|stdout|ENOENT|EADDRINUSE|Error|tkn|\/Users|\/private|\/tmp/, kind);
+  }
+  assert.match(panelText('missing'), /Shell Command/);
+});
+
+test('raw process output and the connection token go to the log, with the token removed', () => {
+  const detail = failureDetail(`refused token ${token} at /private/tmp/x\nstderr: boom`, 1, token);
+  assert.match(detail, /exit code 1/);
+  assert.match(detail, /stderr: boom/);
+  assert.equal(detail.includes(token), false);
   assert.equal(scrub(`see ${token}`, token).includes(token), false);
+  assert.doesNotMatch(panelText('start'), /boom|stderr|refused/);
 });
 
 test('the page is drawn on macOS only', () => {
@@ -160,10 +172,8 @@ test('the page is drawn on macOS only', () => {
   assert.equal(pageOnThisSystem('win32'), false);
 });
 
-test('a missing codium command says how to install it', () => {
-  const text = notFoundText(new Error('spawn codium ENOENT'));
-  assert.match(text, /Could not start codium/);
-  assert.match(text, /Shell Command/);
+test('a missing codium command keeps its reason in the log', () => {
+  assert.match(notFoundDetail(new Error('spawn codium ENOENT')), /Could not start codium: spawn codium ENOENT/);
 });
 
 const workspace = '/bb/worktrees/thr_a/frontend';

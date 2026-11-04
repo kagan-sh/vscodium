@@ -13,16 +13,16 @@ import {
   HOLD_MS,
   ONLY_MACOS,
   POLL_MS,
-  START_DEADLINE_MS,
   STARTING,
   STARTUP_TIMEOUT_TEXT,
   connectionToken,
   isNotGranted,
   startExpired,
   editorPageUrl,
-  failureText,
+  failureDetail,
+  panelText,
   laterText,
-  notFoundText,
+  notFoundDetail,
   openPosition,
   openedWhere,
   openingText,
@@ -63,12 +63,20 @@ let starting = null;
 /** @type {Server[]} */
 let abandoned = [];
 
-class StartTimeout extends Error {
-  constructor() {
-    super(STARTUP_TIMEOUT_TEXT);
-    this.name = 'StartTimeout';
+/** A start that failed. `kind` picks the panel copy; `detail` is for the log only. */
+class StartFailure extends Error {
+  /** @param {string} kind @param {string} detail */
+  constructor(kind, detail) {
+    super(kind);
+    this.name = 'StartFailure';
+    this.kind = kind;
+    this.detail = detail;
   }
 }
+
+/** Every token this process has made, so the log can hide them. */
+/** @type {string[]} */
+const tokens = [];
 
 /** @type {{ put(threadId: string, value: OpenSpec): void, take(threadId: string): OpenSpec | null }} */
 const pending = createPending(PENDING_MS);
@@ -116,14 +124,14 @@ export class OpenPanel extends View {
     this.cx.spawn(() => this.sync());
   }
 
-  /** @param {string} text */
-  showFailure(text) {
-    log('error', text);
+  /** @param {string} kind @param {string} detail */
+  showFailure(kind, detail) {
+    log('error', logged(detail || kind));
     this.page = '';
     this.shown = null;
     this.failed = true;
     this.busy = false;
-    this.status = text;
+    this.status = panelText(kind);
     this.cx.notify();
   }
 
@@ -168,7 +176,7 @@ export class OpenPanel extends View {
       server = await ensureServer();
     } catch (error) {
       if (!fresh()) return;
-      this.showFailure(sentence(error));
+      this.showFailure(kindOf(error), detailOf(error));
       return;
     }
     if (!fresh()) return;
@@ -204,7 +212,7 @@ export class OpenPanel extends View {
       this.cx.notify();
     } catch (error) {
       if (!fresh()) return;
-      this.showFailure(sentence(error));
+      this.showFailure('folder', rawMessage(error));
     }
   }
 
@@ -272,11 +280,12 @@ async function boot(cx) {
   }
   const dirs = await serverDirs();
   const token = connectionToken(new Uint8Array(randomBytes(24)));
+  tokens.push(token);
   const saved = Number(localStorage.getItem('port'));
-  let last = 'VSCodium did not start.';
+  let last = new StartFailure('start', 'no port answered');
   for (const port of portOrder(Number.isInteger(saved) ? saved : null)) {
     if (await answering(port)) {
-      last = 'VSCodium did not start. That port is already in use.';
+      last = new StartFailure('port', 'another listener already answers on the port');
       continue;
     }
     const promise = run('codium', serveWebArgs({ port, token, dataDir: dirs.dataDir, cliDir: dirs.cliDir }), { timeoutMs: HOLD_MS });
@@ -289,14 +298,14 @@ async function boot(cx) {
       return attempt;
     } catch (error) {
       if (error instanceof PortInUse) {
-        last = `VSCodium did not start. ${error.message}`;
+        last = new StartFailure('port', rawMessage(error));
         continue;
       }
-      if (error instanceof StartTimeout) abandon(attempt);
+      if (error instanceof StartFailure && error.kind === 'timeout') abandon(attempt);
       throw error;
     }
   }
-  throw new Error(last);
+  throw last;
 }
 
 /**
@@ -318,14 +327,16 @@ async function waitReady(cx, attempt) {
   );
   const startedAt = Date.now();
   for (;;) {
-    if (settled?.error) throw new Error(startError(settled.error, attempt.token));
+    if (settled?.error) throw startFailure(settled.error, attempt.token);
     if (settled?.result) {
       const output = `${settled.result.stdout}\n${settled.result.stderr}`;
       if (portBusy(output)) throw new PortInUse();
-      throw new Error(failureText(output, settled.result.exitCode, attempt.token));
+      throw new StartFailure('start', failureDetail(output, settled.result.exitCode, attempt.token));
     }
     if (await answering(attempt.port)) return;
-    if (startExpired(startedAt, Date.now())) throw new StartTimeout();
+    if (startExpired(startedAt, Date.now())) {
+      throw new StartFailure('timeout', 'no answer from the server before the deadline');
+    }
     await sleep(cx, POLL_MS);
   }
 }
@@ -345,14 +356,14 @@ function watch(attempt) {
     (result) => {
       if (running !== attempt) return;
       running = null;
-      panel?.showFailure(failureText(`${result.stdout}\n${result.stderr}`, result.exitCode, attempt.token));
+      panel?.showFailure('stopped', failureDetail(`${result.stdout}\n${result.stderr}`, result.exitCode, attempt.token));
     },
     (error) => {
       if (running !== attempt) return;
       running = null;
-      const message = sentence(error);
+      const message = rawMessage(error);
       if (/unloaded/.test(message)) return;
-      panel?.showFailure(scrub(message, attempt.token));
+      panel?.showFailure('stopped', scrub(message, attempt.token));
     },
   );
 }
@@ -394,11 +405,33 @@ async function serverDirs() {
 /**
  * @param {unknown} error
  * @param {string} token
+ * @returns {StartFailure}
  */
-function startError(error, token) {
-  const message = sentence(error);
-  if (/not found/i.test(message)) return notFoundText(error);
-  return scrub(message, token);
+function startFailure(error, token) {
+  const raw = scrub(rawMessage(error), token);
+  if (/not found/i.test(raw)) return new StartFailure('missing', notFoundDetail(error));
+  return new StartFailure('start', raw);
+}
+
+/** @param {unknown} error */
+function kindOf(error) {
+  if (error instanceof StartFailure) return error.kind;
+  return isNotGranted(error) ? 'denied' : 'start';
+}
+
+/** @param {unknown} error */
+function detailOf(error) {
+  return error instanceof StartFailure ? error.detail : rawMessage(error);
+}
+
+/** @param {unknown} error */
+function rawMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** @param {string} text */
+function logged(text) {
+  return tokens.reduce((clean, token) => scrub(clean, token), text);
 }
 
 /**

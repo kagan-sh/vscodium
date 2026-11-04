@@ -177,15 +177,36 @@ export function scrub(text, token) {
 }
 
 /**
+ * What the panel says for each kind of failure. Raw process output never appears here; it goes to the log.
+ * @type {Record<string, string>}
+ */
+const PANEL_TEXT = {
+  start: 'VSCodium did not start. Press Try again.',
+  missing: 'VSCodium was not found on this computer. Install VSCodium, then in VSCodium run "Shell Command: Install \'codium\' command in PATH". Then press Try again.',
+  denied: "VSCodium cannot reach its own page yet. Approve this plugin's permissions, then press Try again.",
+  port: 'Another program is using a port VSCodium needs. Close it, then press Try again.',
+  timeout: STARTUP_TIMEOUT_TEXT,
+  stopped: 'VSCodium stopped. Press Try again.',
+  folder: "VSCodium could not open this thread's folder. Press Try again.",
+};
+
+/**
+ * @param {string} kind
+ * @returns {string}
+ */
+export function panelText(kind) {
+  return PANEL_TEXT[kind] ?? PANEL_TEXT.start;
+}
+
+/**
+ * The full process output for the log, with the connection token removed.
  * @param {string} output
  * @param {number | null | undefined} exitCode
  * @param {string} token
  * @returns {string}
  */
-export function failureText(output, exitCode, token) {
-  const clean = scrub(output || '', token);
-  const detail = clean.split('\n').map((line) => line.trim()).find(Boolean) || `exit code ${exitCode ?? 'none'}`;
-  return `VSCodium did not start. ${detail}`;
+export function failureDetail(output, exitCode, token) {
+  return `exit code ${exitCode ?? 'none'}\n${scrub(output || '', token)}`;
 }
 
 /**
@@ -280,13 +301,13 @@ export function editorPageUrl(options) {
 }
 
 /**
- * Says what to do when `codium` cannot be started at all.
+ * The reason `codium` could not start, for the log.
  * @param {unknown} error
  * @returns {string}
  */
-export function notFoundText(error) {
+export function notFoundDetail(error) {
   const reason = error instanceof Error ? error.message : String(error);
-  return `Could not start codium (${reason}). Install VSCodium, then in VSCodium run "Shell Command: Install 'codium' command in PATH".`;
+  return `Could not start codium: ${reason}`;
 }
 
 /**
