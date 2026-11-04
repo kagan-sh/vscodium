@@ -205,7 +205,9 @@ export class OpenPanel extends View {
   }
 
   render() {
-    if (this.page) return new WebView('editor').url(this.page);
+    // The editor keeps the theme and the window state in the page's storage, keyed by origin.
+    // Without store(true) that storage is private and thrown away, so every open starts light.
+    if (this.page) return new WebView('editor').url(this.page).store(true);
     const column = v_flex()
       .id('vscodium-open')
       .size_full()
