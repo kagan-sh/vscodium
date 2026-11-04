@@ -33,6 +33,7 @@ import {
   versionUrl,
   createPending,
   PENDING_MS,
+  requestForScreen,
 } from './editor.js';
 
 const NO_THREAD = 'Open a thread first. There is no workspace to open.';
@@ -86,8 +87,6 @@ export class OpenPanel extends View {
     this.generation = 0;
     /** @type {{ threadId: string, folder: string, url: string } | null} */
     this.shown = null;
-    /** @type {{ threadId: string, spec: OpenSpec } | null} */
-    this.wanted = null;
     cx.spawn(async () => {
       await this.sync();
       for (;;) {
@@ -97,11 +96,8 @@ export class OpenPanel extends View {
     });
   }
 
-  /** @param {OpenSpec} spec */
-  reveal(spec) {
-    const threadId = context().threadId;
-    if (!threadId) return;
-    this.wanted = { threadId, spec };
+  /** Looks again at the thread on screen. Its own queued request, if any, opens. */
+  reveal() {
     this.cx.spawn(() => this.sync());
   }
 
@@ -172,12 +168,7 @@ export class OpenPanel extends View {
     try {
       const folder = (await workspaceOf(current)).workspace;
       if (!fresh()) return;
-      const queued = pending.take(current);
-      let spec = queued;
-      if (this.wanted?.threadId === current) {
-        spec = this.wanted.spec;
-        this.wanted = null;
-      }
+      const spec = requestForScreen(pending, current);
       const shown = this.shown;
       const same = shown !== null && shown.threadId === current && shown.folder === folder && !spec;
       const url = same
@@ -398,7 +389,8 @@ async function openFile(threadId, request) {
   } catch (error) {
     if (!panel) return { ok: false, text: sentence(error) };
   }
-  panel?.reveal(spec);
+  if (!threadOnScreen(threadId)) return { ok: true, text: laterText(where) };
+  panel?.reveal();
   return { ok: true, text: openingText(where, Boolean(running)) };
 }
 

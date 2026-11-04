@@ -21,6 +21,7 @@ import {
   pageOnThisSystem,
   portBusy,
   portOrder,
+  requestForScreen,
   resolveOpenPath,
   serverFolders,
   scrub,
@@ -257,6 +258,17 @@ test('only the latest request per thread is kept, and old ones are dropped', () 
   queue.put('thr_2', 'open d.ts');
   assert.equal(queue.size(), 1);
   assert.equal(queue.take('thr_1'), null);
+});
+
+test('a file request opens only on the thread that made it, and waits while another thread is on screen', () => {
+  const queue = createPending(PENDING_MS);
+  queue.put('thr_a', { path: '/w/a/src/a.ts', line: 3 });
+  assert.equal(requestForScreen(queue, 'thr_b'), null);
+  assert.equal(queue.size(), 1);
+  assert.equal(requestForScreen(queue, null), null);
+  assert.equal(queue.size(), 1);
+  assert.deepEqual(requestForScreen(queue, 'thr_a'), { path: '/w/a/src/a.ts', line: 3 });
+  assert.equal(queue.size(), 0);
 });
 
 test('a launch starts on thread A, the panel moves to B, the launch ends, the panel is not busy, and B\'s saved request opens', () => {

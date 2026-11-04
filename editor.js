@@ -378,6 +378,18 @@ export function createPending(ttlMs, now = Date.now) {
 }
 
 /**
+ * A saved request opens only on the thread that made it. While another thread is on screen it stays queued.
+ * @template T
+ * @param {{ take(threadId: string): T | null }} queue
+ * @param {string | null} screenThreadId
+ * @returns {T | null}
+ */
+export function requestForScreen(queue, screenThreadId) {
+  if (!screenThreadId) return null;
+  return queue.take(screenThreadId);
+}
+
+/**
  * A tool launch owns the panel's busy flag.
  * Moving the panel does not clear it and does not drop the launch.
  * @param {string | null} visible
