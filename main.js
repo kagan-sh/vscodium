@@ -13,8 +13,12 @@ import {
   HOLD_MS,
   ONLY_MACOS,
   POLL_MS,
+  START_DEADLINE_MS,
   STARTING,
+  STARTUP_TIMEOUT_TEXT,
   connectionToken,
+  isNotGranted,
+  startExpired,
   editorPageUrl,
   failureText,
   laterText,
@@ -54,6 +58,17 @@ let running = null;
 
 /** @type {Promise<Server> | null} */
 let starting = null;
+
+/** Servers that did not answer in time. They are still running, and a later start adopts one that answers. */
+/** @type {Server[]} */
+let abandoned = [];
+
+class StartTimeout extends Error {
+  constructor() {
+    super(STARTUP_TIMEOUT_TEXT);
+    this.name = 'StartTimeout';
+  }
+}
 
 /** @type {{ put(threadId: string, value: OpenSpec): void, take(threadId: string): OpenSpec | null }} */
 const pending = createPending(PENDING_MS);
@@ -247,6 +262,14 @@ function ensureServer() {
  * @returns {Promise<Server>}
  */
 async function boot(cx) {
+  for (const old of abandoned) {
+    if (await answering(old.port)) {
+      abandoned = abandoned.filter((server) => server !== old);
+      localStorage.setItem('port', String(old.port));
+      watch(old);
+      return old;
+    }
+  }
   const dirs = await serverDirs();
   const token = connectionToken(new Uint8Array(randomBytes(24)));
   const saved = Number(localStorage.getItem('port'));
@@ -269,6 +292,7 @@ async function boot(cx) {
         last = `VSCodium did not start. ${error.message}`;
         continue;
       }
+      if (error instanceof StartTimeout) abandon(attempt);
       throw error;
     }
   }
@@ -292,6 +316,7 @@ async function waitReady(cx, attempt) {
       settled = { error };
     },
   );
+  const startedAt = Date.now();
   for (;;) {
     if (settled?.error) throw new Error(startError(settled.error, attempt.token));
     if (settled?.result) {
@@ -300,8 +325,18 @@ async function waitReady(cx, attempt) {
       throw new Error(failureText(output, settled.result.exitCode, attempt.token));
     }
     if (await answering(attempt.port)) return;
+    if (startExpired(startedAt, Date.now())) throw new StartTimeout();
     await sleep(cx, POLL_MS);
   }
+}
+
+/** @param {Server} attempt */
+function abandon(attempt) {
+  abandoned = [...abandoned, attempt];
+  const drop = () => {
+    abandoned = abandoned.filter((server) => server !== attempt);
+  };
+  attempt.promise.then(drop, drop);
 }
 
 /** @param {Server} attempt */
@@ -331,8 +366,7 @@ async function answering(port) {
     const response = await fetch(versionUrl(port));
     return versionReady(response.status);
   } catch (error) {
-    const message = sentence(error);
-    if (/not granted/i.test(message)) throw error;
+    if (isNotGranted(error)) throw error;
     return false;
   }
 }

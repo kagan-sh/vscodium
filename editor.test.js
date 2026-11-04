@@ -21,8 +21,12 @@ import {
   pageOnThisSystem,
   portBusy,
   portOrder,
+  STARTUP_TIMEOUT_TEXT,
+  START_DEADLINE_MS,
+  isNotGranted,
   requestForScreen,
   resolveOpenPath,
+  startExpired,
   serverFolders,
   scrub,
   serveWebArgs,
@@ -101,6 +105,20 @@ test('a file open asks the page to jump to the line and column', () => {
     ['openFile', 'vscode-remote://127.0.0.1:47321/work/app/src/a.js:42:7'],
     ['gotoLineMode', 'true'],
   ]);
+});
+
+test('a server that has not answered by the deadline is given up on, with a plain message', () => {
+  assert.ok(START_DEADLINE_MS >= 2 * 60 * 1000 && START_DEADLINE_MS <= 10 * 60 * 1000);
+  assert.equal(startExpired(1000, 1000 + START_DEADLINE_MS - 1), false);
+  assert.equal(startExpired(1000, 1000 + START_DEADLINE_MS), true);
+  assert.match(STARTUP_TIMEOUT_TEXT, /Try again/);
+  assert.doesNotMatch(STARTUP_TIMEOUT_TEXT, /\bport\b|exit|stderr|stdout/);
+});
+
+test('a missing permission is recognised from the raw message, before anything makes it plain', () => {
+  assert.equal(isNotGranted(new Error('fetch to http://127.0.0.1:47321/version is not granted')), true);
+  assert.equal(isNotGranted(new Error('connection refused')), false);
+  assert.equal(isNotGranted('not granted'), true);
 });
 
 test('a file name with # ? % or : stays part of the file name', () => {

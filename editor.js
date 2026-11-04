@@ -23,6 +23,32 @@ export const ONLY_MACOS = 'This page works on macOS only for now.';
 
 const STARTING = 'Starting VSCodium. The first start can take a few minutes.';
 
+/** How long a started server may take to answer before the panel gives up on it. */
+export const START_DEADLINE_MS = 4 * 60 * 1000;
+
+/** The panel says this when the server does not answer in time. */
+export const STARTUP_TIMEOUT_TEXT = 'VSCodium took too long to start. Press Try again.';
+
+/**
+ * @param {number} startedAt
+ * @param {number} now
+ * @param {number} [limitMs]
+ * @returns {boolean}
+ */
+export function startExpired(startedAt, now, limitMs = START_DEADLINE_MS) {
+  return now - startedAt >= limitMs;
+}
+
+/**
+ * Check this on the raw error. A message that has already been made plain no longer says "not granted".
+ * @param {unknown} error
+ * @returns {boolean}
+ */
+export function isNotGranted(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /not granted/i.test(message);
+}
+
 /**
  * @param {string} platform
  * @returns {boolean}
