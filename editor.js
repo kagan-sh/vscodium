@@ -233,7 +233,8 @@ export function editorPageUrl(options) {
     if (typeof file !== 'string' || !file.startsWith('/')) {
       throw new Error('Give an absolute path that starts with "/".');
     }
-    let target = file;
+    // Each segment is encoded alone, so # and ? stay part of the name and / keeps its place.
+    let target = file.split('/').map((segment) => encodeURIComponent(segment)).join('/');
     if (line !== undefined) {
       if (!Number.isInteger(line) || line < 1) throw new Error('The line must be a whole number, 1 or more.');
       target += `:${line}`;
@@ -245,7 +246,7 @@ export function editorPageUrl(options) {
       }
     }
     /** @type {[string, string][]} */
-    const payload = [['openFile', `vscode-remote://127.0.0.1:${port}${encodeURI(target)}`]];
+    const payload = [['openFile', `vscode-remote://127.0.0.1:${port}${target}`]];
     if (line !== undefined) payload.push(['gotoLineMode', 'true']);
     url.searchParams.set('payload', JSON.stringify(payload));
   }

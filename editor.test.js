@@ -103,6 +103,15 @@ test('a file open asks the page to jump to the line and column', () => {
   ]);
 });
 
+test('a file name with # ? % or : stays part of the file name', () => {
+  const file = '/work/app/notes #1?/50%: draft.md';
+  const url = new URL(editorPageUrl({ port: 47321, token, folder: '/work/app', file, line: 3 }));
+  const [[, address]] = JSON.parse(url.searchParams.get('payload') ?? '');
+  assert.equal(address, 'vscode-remote://127.0.0.1:47321/work/app/notes%20%231%3F/50%25%3A%20draft.md:3');
+  assert.equal(new URL(address).hash, '');
+  assert.equal(new URL(address).search, '');
+});
+
 test('a line and a column have to be whole numbers, and a column needs a line', () => {
   assert.deepEqual(openPosition(null, null), {});
   assert.deepEqual(openPosition(4, undefined), { line: 4 });
